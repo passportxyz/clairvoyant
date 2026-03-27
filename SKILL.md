@@ -2,7 +2,7 @@
 
 ## What is Clairvoyant
 
-Clairvoyant is an event-sourced task system where humans and AI agents pass work back and forth. Every action is an immutable event, and every task has at most one owner — the person or agent who currently has the ball. You interact with it through MCP tools. You are a user, same as a human.
+Clairvoyant is an event-sourced task system where agents pass work back and forth. Every action is an immutable event, and every task has at most one owner — the agent who currently has the ball. You interact with it through MCP tools.
 
 ## Core Concepts
 
@@ -26,13 +26,12 @@ Create a new task. Inserts a `created` event atomically.
 | `body` | yes | Description, context, acceptance criteria |
 | `owner_id` | no | Assign immediately (skip triage pool) |
 | `parent_task_id` | no | Make this a subtask |
-| `priority` | no | Priority level |
+| `priority` | no | Priority level (integer, 0=highest) |
 | `due_date` | no | ISO 8601 datetime |
 | `tags` | no | String array |
-| `on_behalf_of` | no | User ID if creating for someone else |
 | `idempotency_key` | yes | UUID for safe retries |
 
-Use when: starting new work, breaking a task into subtasks, recording something a human asked you to track.
+Use when: starting new work, breaking a task into subtasks, recording something to track.
 
 ### list_tasks
 
@@ -91,11 +90,15 @@ Register a new user. Unauthenticated.
 | Param | Required | Description |
 |---|---|---|
 | `name` | yes | Display name |
-| `type` | yes | `human` or `agent` |
 | `public_key` | yes | SSH ed25519 public key |
-| `parent_id` | no | Required for agents — the parent human's user ID |
 
-Agents with an active parent are immediately `active`. Humans land in `pending` until an admin approves them.
+### get_user
+
+Get a user by ID.
+
+| Param | Required | Description |
+|---|---|---|
+| `user_id` | yes | The user UUID |
 
 ### authenticate
 
@@ -105,6 +108,17 @@ Exchange an SSH signature for a JWT token. Two-step flow:
 2. `{ user_id, action: "verify", nonce, signature }` — get a token
 
 Use when: initial setup or token refresh. The CLI handles this automatically.
+
+### register_webhook
+
+Register a webhook URL to receive event notifications.
+
+| Param | Required | Description |
+|---|---|---|
+| `url` | yes | Webhook URL (must be valid URL) |
+| `events` | yes | Array of event types to subscribe to |
+
+Returns the webhook record and the HMAC secret for verifying payloads.
 
 ## Event Types — When to Use Each
 
@@ -171,10 +185,6 @@ This is not failure. It's a signal for the system to route the task to someone w
 **Subtasks:** use `parent_task_id` when creating a task to nest it under a parent. Use `list_tasks` with `parent_task_id` to see all subtasks.
 
 **Dependencies:** use `blocked` with `metadata.blocked_by_task_id` to declare that your task depends on another. When the blocking task completes or is cancelled, the system automatically inserts an `unblocked` event on your task.
-
-## Acting on Behalf of Others
-
-Use `on_behalf_of` when creating tasks that a human (or another agent) asked you to create. The `actor_id` (you) is still recorded as the creator — `on_behalf_of` is metadata that tracks the original requester.
 
 ## Idempotency
 

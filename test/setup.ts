@@ -41,25 +41,17 @@ export async function createTestUser(
   client: pg.PoolClient,
   overrides: {
     name?: string;
-    type?: 'human' | 'agent';
-    status?: 'pending' | 'active';
-    is_admin?: boolean;
     public_key?: string;
-    parent_id?: string;
   } = {}
-): Promise<{ id: string; name: string; type: string; status: string; is_admin: boolean; public_key: string; parent_id: string | null; created_at: Date }> {
+): Promise<{ id: string; name: string; public_key: string; created_at: Date }> {
   const name = overrides.name || 'test-user-' + Math.random().toString(36).slice(2, 8);
-  const type = overrides.type || 'human';
-  const status = overrides.status || 'active';
-  const is_admin = overrides.is_admin ?? false;
   const public_key = overrides.public_key || 'ssh-ed25519 ' + Buffer.from(Math.random().toString()).toString('base64');
-  const parent_id = overrides.parent_id || null;
 
   const result = await client.query(
-    `INSERT INTO users (name, type, status, is_admin, public_key, parent_id)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO users (name, public_key)
+     VALUES ($1, $2)
      RETURNING *`,
-    [name, type, status, is_admin, public_key, parent_id]
+    [name, public_key]
   );
   return result.rows[0];
 }

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { applyEvent } from '../src/projection.js';
-import type { Event, Task } from '../src/types.js';
+import type { Event } from '../src/types.js';
 
 // ── Helpers ────────────────────────────────────────────────────
 
@@ -13,20 +13,6 @@ function makeEvent(overrides: Partial<Event> & { event_type: Event['event_type']
     metadata: {},
     idempotency_key: 'idem-1',
     created_at: new Date('2026-03-27T12:00:00Z'),
-    ...overrides,
-  };
-}
-
-function makeTask(overrides: Partial<Task> = {}): Task {
-  return {
-    id: 'task-1',
-    title: 'Test task',
-    status: 'open',
-    creator_id: 'user-1',
-    tags: [],
-    version: 1,
-    created_at: new Date('2026-03-27T11:00:00Z'),
-    updated_at: new Date('2026-03-27T11:00:00Z'),
     ...overrides,
   };
 }
@@ -168,8 +154,7 @@ describe('applyEvent', () => {
   describe('completed', () => {
     it('sets status to done and produces check_unblocks', () => {
       const event = makeEvent({ event_type: 'completed' });
-      const task = makeTask();
-      const result = applyEvent(event, task);
+      const result = applyEvent(event);
 
       expect(result.taskUpdates).toEqual({
         status: 'done',

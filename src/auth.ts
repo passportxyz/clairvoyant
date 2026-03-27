@@ -1,13 +1,18 @@
 import jwt from 'jsonwebtoken';
 import crypto from 'node:crypto';
-import { AuthError, type JwtPayload, type UserType } from './types.js';
+import { AuthError, type JwtPayload } from './types.js';
 
 // ── Internal State ─────────────────────────────────────────────
 
-const nonceStore: Map<string, Date> = new Map();
+// Nonces are bound to user_id to prevent cross-user replay
+const nonceStore: Map<string, { expiresAt: Date; userId: string }> = new Map();
 
 function getSecret(): string {
-  return process.env.CV_JWT_SECRET ?? 'test-secret';
+  const secret = process.env.CV_JWT_SECRET;
+  if (!secret) {
+    throw new Error('CV_JWT_SECRET environment variable is required');
+  }
+  return secret;
 }
 
 function getExpiryDays(): number {
@@ -20,21 +25,20 @@ function getExpiryDays(): number {
 export function signToken(payload: {
   sub: string;
   name: string;
-  type: UserType;
 }): string {
   const secret = getSecret();
   const expiryDays = getExpiryDays();
   return jwt.sign(
-    { sub: payload.sub, name: payload.name, type: payload.type },
+    { sub: payload.sub, name: payload.name },
     secret,
-    { expiresIn: `${expiryDays}d` },
+    { algorithm: 'HS256', expiresIn: `${expiryDays}d` },
   );
 }
 
 export function verifyToken(token: string): JwtPayload {
   const secret = getSecret();
   try {
-    const decoded = jwt.verify(token, secret) as JwtPayload;
+    const decoded = jwt.verify(token, secret, { algorithms: ['HS256'] }) as JwtPayload;
     return decoded;
   } catch (err: unknown) {
     if (err instanceof jwt.TokenExpiredError) {
@@ -53,29 +57,30 @@ export function extractActorId(token: string): string {
 
 function cleanExpiredNonces(): void {
   const now = new Date();
-  for (const [nonce, expiresAt] of nonceStore) {
-    if (expiresAt <= now) {
+  for (const [nonce, entry] of nonceStore) {
+    if (entry.expiresAt <= now) {
       nonceStore.delete(nonce);
     }
   }
 }
 
-export function generateNonce(): { nonce: string; expiresAt: Date } {
+export function generateNonce(userId: string): { nonce: string; expiresAt: Date } {
   cleanExpiredNonces();
   const nonce = crypto.randomBytes(32).toString('hex');
   const expiresAt = new Date(Date.now() + 60_000); // 60s TTL
-  nonceStore.set(nonce, expiresAt);
+  nonceStore.set(nonce, { expiresAt, userId });
   return { nonce, expiresAt };
 }
 
-export function consumeNonce(nonce: string): boolean {
+export function consumeNonce(nonce: string, userId: string): boolean {
   cleanExpiredNonces();
-  const expiresAt = nonceStore.get(nonce);
-  if (!expiresAt) return false;
-  if (expiresAt <= new Date()) {
+  const entry = nonceStore.get(nonce);
+  if (!entry) return false;
+  if (entry.expiresAt <= new Date()) {
     nonceStore.delete(nonce);
     return false;
   }
+  if (entry.userId !== userId) return false;
   nonceStore.delete(nonce);
   return true;
 }

@@ -1,6 +1,7 @@
 import pg from 'pg';
 import {
   getTaskById,
+  getTaskByIdForUpdate,
   getUserById,
   insertEvent,
   getEventByIdempotencyKey,
@@ -33,6 +34,10 @@ export interface ClaimErrorResult {
 const TERMINAL_STATUSES = new Set(['done', 'cancelled']);
 const FIELD_CHANGED_ALLOWED = new Set(['title', 'priority', 'due_date', 'tags']);
 
+/**
+ * Append an event to a task within a transaction.
+ * Caller must have already called BEGIN on the client.
+ */
 export async function appendEvent(
   client: pg.PoolClient,
   actorId: string,
@@ -48,8 +53,8 @@ export async function appendEvent(
     return { event: existing, task, sideEffects: [] };
   }
 
-  // Get current task
-  const task = await getTaskById(client, input.task_id);
+  // Lock the task row to prevent concurrent modifications
+  const task = await getTaskByIdForUpdate(client, input.task_id);
   if (!task) throw new Error(`Task not found: ${input.task_id}`);
 
   // Terminal state check: only 'note' events allowed on done/cancelled tasks
@@ -66,9 +71,6 @@ export async function appendEvent(
       if (!toUserId) throw new Error("handoff event requires metadata.to_user_id");
       const targetUser = await getUserById(client, toUserId);
       if (!targetUser) throw new Error(`Handoff target user not found: ${toUserId}`);
-      if (targetUser.status !== 'active') {
-        throw new Error(`Handoff target user is not active: ${toUserId}`);
-      }
       break;
     }
 
@@ -108,7 +110,7 @@ export async function appendEvent(
   });
 
   // Apply projection
-  const { taskUpdates, sideEffects } = applyEvent(event, task);
+  const { taskUpdates, sideEffects } = applyEvent(event);
 
   // Update task if projection produced updates
   if (Object.keys(taskUpdates).length > 0) {

@@ -1,11 +1,10 @@
-import type { Event, Task, ProjectionResult, SideEffect } from './types.js';
+import type { Event, ProjectionResult, SideEffect } from './types.js';
 
 /**
- * Pure projection function: given an event and optional current task state,
- * returns the task field updates and side effects to apply.
- * No DB calls — just logic.
+ * Pure projection function: given an event, returns the task field updates
+ * and side effects to apply. No DB calls — just logic.
  */
-export function applyEvent(event: Event, _currentTask?: Task): ProjectionResult {
+export function applyEvent(event: Event): ProjectionResult {
   const webhook: SideEffect = { type: 'webhook', eventType: event.event_type };
 
   switch (event.event_type) {
@@ -18,11 +17,6 @@ export function applyEvent(event: Event, _currentTask?: Task): ProjectionResult 
     }
 
     case 'note':
-      return {
-        taskUpdates: { updated_at: event.created_at },
-        sideEffects: [webhook],
-      };
-
     case 'progress':
       return {
         taskUpdates: { updated_at: event.created_at },
@@ -48,11 +42,6 @@ export function applyEvent(event: Event, _currentTask?: Task): ProjectionResult 
       };
 
     case 'blocked':
-      return {
-        taskUpdates: { updated_at: event.created_at },
-        sideEffects: [webhook],
-      };
-
     case 'unblocked':
       return {
         taskUpdates: { updated_at: event.created_at },

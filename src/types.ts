@@ -14,20 +14,12 @@ export type EventType =
 
 export type TaskStatus = 'open' | 'done' | 'cancelled';
 
-export type UserType = 'human' | 'agent';
-
-export type UserStatus = 'pending' | 'active';
-
 // ── Core Entities ───────────────────────────────────────────────
 
 export interface User {
   id: string;
   name: string;
-  type: UserType;
-  status: UserStatus;
-  is_admin: boolean;
   public_key: string;
-  parent_id?: string;
   created_at: Date;
 }
 
@@ -86,7 +78,6 @@ export interface ProjectionResult {
 export interface JwtPayload {
   sub: string;
   name: string;
-  type: UserType;
   iat: number;
   exp: number;
 }

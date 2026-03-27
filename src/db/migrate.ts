@@ -52,12 +52,7 @@ export async function runMigrations(pool: pg.Pool): Promise<void> {
 }
 
 // Standalone execution
-const isMain =
-  import.meta.url === `file://${process.argv[1]}` ||
-  process.argv[1]?.endsWith("/db/migrate.js") ||
-  process.argv[1]?.endsWith("/db/migrate.ts");
-
-if (isMain) {
+if (import.meta.url === `file://${process.argv[1]}`) {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
     console.error("DATABASE_URL environment variable is required");

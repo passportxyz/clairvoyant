@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import {
@@ -34,11 +34,16 @@ function makeEd25519Keypair() {
   return { publicKey, privateKey, sshPub, rawPub };
 }
 
+// Set JWT secret for tests
+beforeEach(() => {
+  process.env.CV_JWT_SECRET = 'test-secret';
+});
+
 // ── JWT Tests ──────────────────────────────────────────────────
 
 describe('signToken', () => {
   it('produces a valid JWT string', () => {
-    const token = signToken({ sub: 'u1', name: 'Alice', type: 'human' });
+    const token = signToken({ sub: 'u1', name: 'Alice' });
     expect(typeof token).toBe('string');
     const parts = token.split('.');
     expect(parts).toHaveLength(3);
@@ -47,20 +52,19 @@ describe('signToken', () => {
 
 describe('verifyToken', () => {
   it('decodes a valid token correctly', () => {
-    const token = signToken({ sub: 'u1', name: 'Alice', type: 'human' });
+    const token = signToken({ sub: 'u1', name: 'Alice' });
     const payload = verifyToken(token);
     expect(payload.sub).toBe('u1');
     expect(payload.name).toBe('Alice');
-    expect(payload.type).toBe('human');
     expect(typeof payload.iat).toBe('number');
     expect(typeof payload.exp).toBe('number');
   });
 
   it('throws AuthError with expired_token for expired tokens', () => {
     const token = jwt.sign(
-      { sub: 'u2', name: 'Bob', type: 'agent' },
+      { sub: 'u2', name: 'Bob' },
       'test-secret',
-      { expiresIn: '-1s' },
+      { algorithm: 'HS256', expiresIn: '-1s' },
     );
     expect(() => verifyToken(token)).toThrow(AuthError);
     try {
@@ -80,11 +84,16 @@ describe('verifyToken', () => {
       expect((err as AuthError).code).toBe('invalid_token');
     }
   });
+
+  it('throws when CV_JWT_SECRET is not set', () => {
+    delete process.env.CV_JWT_SECRET;
+    expect(() => signToken({ sub: 'u1', name: 'Alice' })).toThrow('CV_JWT_SECRET');
+  });
 });
 
 describe('extractActorId', () => {
   it('returns the sub field', () => {
-    const token = signToken({ sub: 'actor-42', name: 'Bot', type: 'agent' });
+    const token = signToken({ sub: 'actor-42', name: 'Bot' });
     expect(extractActorId(token)).toBe('actor-42');
   });
 });
@@ -93,25 +102,29 @@ describe('extractActorId', () => {
 
 describe('generateNonce', () => {
   it('returns a hex string and future expiry', () => {
-    const { nonce, expiresAt } = generateNonce();
+    const { nonce, expiresAt } = generateNonce('user-1');
     expect(nonce).toMatch(/^[0-9a-f]{64}$/);
     expect(expiresAt.getTime()).toBeGreaterThan(Date.now());
   });
 });
 
 describe('consumeNonce', () => {
-  it('returns true for valid nonce, false for already-consumed', () => {
-    const { nonce } = generateNonce();
-    expect(consumeNonce(nonce)).toBe(true);
-    expect(consumeNonce(nonce)).toBe(false);
+  it('returns true for valid nonce with correct user, false for already-consumed', () => {
+    const { nonce } = generateNonce('user-1');
+    expect(consumeNonce(nonce, 'user-1')).toBe(true);
+    expect(consumeNonce(nonce, 'user-1')).toBe(false);
+  });
+
+  it('returns false for wrong user', () => {
+    const { nonce } = generateNonce('user-1');
+    expect(consumeNonce(nonce, 'user-2')).toBe(false);
   });
 
   it('returns false for expired nonce', () => {
-    const { nonce } = generateNonce();
-    // Fast-forward time by 61 seconds so the nonce expires
+    const { nonce } = generateNonce('user-1');
     vi.useFakeTimers();
     vi.advanceTimersByTime(61_000);
-    expect(consumeNonce(nonce)).toBe(false);
+    expect(consumeNonce(nonce, 'user-1')).toBe(false);
     vi.useRealTimers();
   });
 });

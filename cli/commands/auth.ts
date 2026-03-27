@@ -6,7 +6,6 @@ import {
   loadConfig,
   saveConfig,
   loadToken,
-  saveToken,
   loadPublicKey,
   loadPrivateKey,
   quickCall,
@@ -46,6 +45,31 @@ function publicKeyToSSH(publicKeyPem: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Helper: authenticate (challenge/response) and save token
+// ---------------------------------------------------------------------------
+
+async function doLogin(userId: string, privateKeyPem: string): Promise<string> {
+  // Step 1: Request challenge
+  const challenge = await quickCall('authenticate', {
+    user_id: userId,
+    action: 'request_challenge',
+  }, { noAuth: true }) as { nonce: string; expires_at: string };
+
+  // Step 2: Sign the nonce
+  const signature = signNonce(privateKeyPem, challenge.nonce);
+
+  // Step 3: Verify signature and get token
+  const verified = await quickCall('authenticate', {
+    user_id: userId,
+    action: 'verify',
+    nonce: challenge.nonce,
+    signature,
+  }, { noAuth: true }) as { token: string };
+
+  return verified.token;
+}
+
+// ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
 
@@ -80,30 +104,30 @@ export function registerAuthCommands(program: Command): void {
 
   program
     .command('register')
-    .description('Register as a new user')
+    .description('Register as a new user and authenticate')
     .requiredOption('--name <name>', 'Display name')
     .action(async (opts) => {
       const publicKey = await loadPublicKey();
+      const privateKeyPem = await loadPrivateKey();
 
       const result = await quickCall('register_user', {
         name: opts.name,
-        type: 'human',
         public_key: publicKey,
-      }, { noAuth: true }) as { id: string; status: string };
+      }, { noAuth: true }) as { user: { id: string } };
 
       const config = await loadConfig();
-      config.user_id = result.id;
+      config.user_id = result.user.id;
       await saveConfig(config);
 
       console.log(`Registered as: ${opts.name}`);
-      console.log(`  User ID: ${result.id}`);
-      console.log(`  Status:  ${result.status}`);
-      console.log();
-      console.log(`User ID saved to ~/.cv/config`);
+      console.log(`  User ID: ${result.user.id}`);
 
-      if (result.status === 'pending') {
-        console.log(`\nYour account is pending admin approval.`);
-      }
+      // Automatically authenticate after registration
+      const { saveToken } = await import('../config.js');
+      const token = await doLogin(result.user.id, privateKeyPem);
+      await saveToken(token);
+
+      console.log(`  Token: saved to ~/.cv/token`);
     });
 
   // ── cv auth ──────────────────────────────────────────────────
@@ -125,25 +149,9 @@ export function registerAuthCommands(program: Command): void {
       }
 
       const privateKeyPem = await loadPrivateKey();
-
-      // Step 1: Request challenge
-      const challenge = await quickCall('authenticate', {
-        user_id: config.user_id,
-        action: 'request_challenge',
-      }, { noAuth: true }) as { nonce: string; expires_at: string };
-
-      // Step 2: Sign the nonce
-      const signature = signNonce(privateKeyPem, challenge.nonce);
-
-      // Step 3: Verify signature and get token
-      const verified = await quickCall('authenticate', {
-        user_id: config.user_id,
-        action: 'verify',
-        nonce: challenge.nonce,
-        signature,
-      }, { noAuth: true }) as { token: string };
-
-      await saveToken(verified.token);
+      const { saveToken } = await import('../config.js');
+      const token = await doLogin(config.user_id, privateKeyPem);
+      await saveToken(token);
 
       console.log(`Authenticated successfully.`);
       console.log(`Token saved to ~/.cv/token`);
@@ -160,11 +168,9 @@ export function registerAuthCommands(program: Command): void {
 
       console.log(`Config directory: ${CV_DIR}`);
       console.log(`User ID: ${config.user_id ?? '(not set)'}`);
-      console.log(`Server URL: ${config.server_url ?? '(default: stdio)'}`);
       console.log(`Token: ${token ? 'present' : '(none)'}`);
 
       if (token) {
-        // Decode JWT payload without verification (just for display)
         try {
           const parts = token.split('.');
           const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
@@ -172,7 +178,6 @@ export function registerAuthCommands(program: Command): void {
           console.log(`Token claims:`);
           console.log(`  sub:  ${payload.sub}`);
           console.log(`  name: ${payload.name}`);
-          console.log(`  type: ${payload.type}`);
           if (payload.exp) {
             const expDate = new Date(payload.exp * 1000);
             const now = new Date();
@@ -183,69 +188,6 @@ export function registerAuthCommands(program: Command): void {
           console.log(`  (could not decode token)`);
         }
       }
-    });
-
-  // ── cv agent create ──────────────────────────────────────────
-
-  const agent = program
-    .command('agent')
-    .description('Agent management commands');
-
-  agent
-    .command('create')
-    .description('Create an agent under current user')
-    .requiredOption('--name <name>', 'Agent name')
-    .action(async (opts) => {
-      const config = await loadConfig();
-      if (!config.user_id) {
-        console.error('Error: No user_id in config. Run "cv register" first.');
-        process.exit(1);
-      }
-
-      const token = await loadToken();
-      if (!token) {
-        console.error('Error: Not authenticated. Run "cv auth login" first.');
-        process.exit(1);
-      }
-
-      // Generate a new keypair for the agent
-      const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519', {
-        publicKeyEncoding: { type: 'spki', format: 'pem' },
-        privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
-      });
-
-      const sshPubKey = publicKeyToSSH(publicKey);
-
-      // Register agent
-      const result = await quickCall('register_user', {
-        name: opts.name,
-        type: 'agent',
-        public_key: sshPubKey,
-        parent_id: config.user_id,
-      }, { noAuth: true }) as { id: string; status: string };
-
-      // Authenticate agent to get its token
-      const challenge = await quickCall('authenticate', {
-        user_id: result.id,
-        action: 'request_challenge',
-      }, { noAuth: true }) as { nonce: string };
-
-      const signature = signNonce(privateKey, challenge.nonce);
-
-      const verified = await quickCall('authenticate', {
-        user_id: result.id,
-        action: 'verify',
-        nonce: challenge.nonce,
-        signature,
-      }, { noAuth: true }) as { token: string };
-
-      console.log(`Agent created:`);
-      console.log(`  Name:    ${opts.name}`);
-      console.log(`  ID:      ${result.id}`);
-      console.log(`  Status:  ${result.status}`);
-      console.log();
-      console.log(`Agent token (use in CV_TOKEN env var):`);
-      console.log(`  ${verified.token}`);
     });
 
   // ── cv mcp-config ────────────────────────────────────────────

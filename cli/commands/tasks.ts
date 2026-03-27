@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { Command } from 'commander';
-import { createMcpClient, callTool } from '../config.js';
+import { createMcpClient, callTool, loadConfig } from '../config.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -109,21 +109,18 @@ export function registerTaskCommands(program: Command): void {
       if (opts.parent) args.parent_task_id = opts.parent;
       if (opts.creator) args.creator_id = opts.creator;
       if (opts.unowned) args.owner_id = null;
-      // --mine is handled after we know our user_id from the token
+
+      if (opts.mine) {
+        const config = await loadConfig();
+        if (config.user_id) {
+          args.owner_id = config.user_id;
+        } else {
+          console.error('Warning: --mine requires user_id in config. Run "cv register" first.');
+        }
+      }
 
       const client = await createMcpClient();
       try {
-        if (opts.mine) {
-          // Read user_id from config
-          const { loadConfig } = await import('../config.js');
-          const config = await loadConfig();
-          if (config.user_id) {
-            args.owner_id = config.user_id;
-          } else {
-            console.error('Warning: --mine requires user_id in config. Run "cv register" first.');
-          }
-        }
-
         const result = await callTool(client, 'list_tasks', args) as { tasks: Record<string, unknown>[]; cursor?: string };
         const tasks = result.tasks ?? [];
 
@@ -246,11 +243,11 @@ export function registerTaskCommands(program: Command): void {
   program
     .command('block <task_id>')
     .description('Mark a task as blocked')
-    .option('--depends-on <id>', 'Blocking task ID')
+    .option('--blocked-by <id>', 'Blocking task ID')
     .option('--reason <reason>', 'Block reason')
     .action(async (taskId, opts) => {
       const metadata: Record<string, unknown> = {};
-      if (opts.dependsOn) metadata.depends_on_task_id = opts.dependsOn;
+      if (opts.blockedBy) metadata.blocked_by_task_id = opts.blockedBy;
 
       const client = await createMcpClient();
       try {

@@ -6,15 +6,18 @@ import { getPool, shutdown } from './db/pool.js';
 import { runMigrations } from './db/migrate.js';
 import { extractActorId } from './auth.js';
 import { AuthError } from './types.js';
+import { processSideEffects } from './webhooks.js';
+import { checkUnblocks } from './unblock.js';
+import { clearStaleAlert } from './staleness.js';
 
 // Tool handlers
 import { createTask } from './tools/tasks.js';
-import { listTasks } from './tools/tasks.js';
 import { getTask } from './tools/tasks.js';
 import { appendEvent } from './tools/events.js';
 import { claimTask } from './tools/events.js';
-import { registerUser, getUser, adminPending, adminApprove, authenticate } from './tools/users.js';
+import { registerUser, getUser, authenticate } from './tools/users.js';
 import { registerWebhook } from './tools/webhooks.js';
+import { listTasks } from './db/queries.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -33,6 +36,100 @@ function textResult(data: unknown) {
 function errorResult(err: unknown) {
   const message = err instanceof Error ? err.message : String(err);
   return { content: [{ type: 'text' as const, text: JSON.stringify({ error: message }) }], isError: true };
+}
+
+type ToolHandler<T> = (client: import('pg').PoolClient, actorId: string, params: T) => Promise<unknown>;
+
+/**
+ * Wrap a tool handler with: auth, pool connection, transaction, error handling.
+ * Write handlers get BEGIN/COMMIT/ROLLBACK. Side effects are processed after commit.
+ */
+function withClient<T>(handler: ToolHandler<T>, opts: { write?: boolean } = {}) {
+  return async (params: T) => {
+    try {
+      const actorId = getActorIdFromEnv();
+      const pool = getPool();
+      const client = await pool.connect();
+      try {
+        if (opts.write) await client.query('BEGIN');
+        const result = await handler(client, actorId, params);
+        if (opts.write) await client.query('COMMIT');
+
+        // Process side effects after commit
+        processSideEffectsFromResult(result);
+
+        return textResult(result);
+      } catch (err) {
+        if (opts.write) await client.query('ROLLBACK').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    } catch (err) {
+      return errorResult(err);
+    }
+  };
+}
+
+/**
+ * Wrap an unauthenticated tool handler (no actorId).
+ */
+function withClientNoAuth<T>(handler: (client: import('pg').PoolClient, params: T) => Promise<unknown>) {
+  return async (params: T) => {
+    try {
+      const pool = getPool();
+      const client = await pool.connect();
+      try {
+        const result = await handler(client, params);
+        return textResult(result);
+      } finally {
+        client.release();
+      }
+    } catch (err) {
+      return errorResult(err);
+    }
+  };
+}
+
+/**
+ * Fire-and-forget side effect processing after a successful commit.
+ */
+function processSideEffectsFromResult(result: unknown): void {
+  if (!result || typeof result !== 'object') return;
+  const r = result as Record<string, unknown>;
+  const sideEffects = r.sideEffects as Array<{ type: string; eventType?: string; taskId?: string }> | undefined;
+  if (!sideEffects || sideEffects.length === 0) return;
+
+  const event = r.event as import('./types.js').Event | undefined;
+  const task = r.task as import('./types.js').Task | undefined;
+
+  const pool = getPool();
+
+  for (const effect of sideEffects) {
+    if (effect.type === 'webhook' && event && task) {
+      processSideEffects(pool, [{ type: 'webhook', eventType: effect.eventType! }], event, task).catch((err) => {
+        console.error('Webhook dispatch error:', err);
+      });
+    } else if (effect.type === 'check_unblocks' && effect.taskId && event) {
+      const client = pool.connect();
+      client.then(async (c) => {
+        try {
+          await c.query('BEGIN');
+          await checkUnblocks(c, effect.taskId!, event.actor_id);
+          await c.query('COMMIT');
+        } catch (err) {
+          await c.query('ROLLBACK').catch(() => {});
+          console.error('Unblock check error:', err);
+        } finally {
+          c.release();
+        }
+      }).catch((err) => {
+        console.error('Unblock connection error:', err);
+      });
+    } else if (effect.type === 'staleness_reset' && task) {
+      clearStaleAlert(task.id);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -57,28 +154,15 @@ server.tool(
     priority: z.number().optional(),
     due_date: z.string().optional().describe('ISO 8601 date string'),
     tags: z.array(z.string()).optional(),
-    on_behalf_of: z.string().optional(),
     idempotency_key: z.string(),
   },
-  async (params) => {
-    try {
-      const actorId = getActorIdFromEnv();
-      const pool = getPool();
-      const client = await pool.connect();
-      try {
-        const input = {
-          ...params,
-          due_date: params.due_date ? new Date(params.due_date) : undefined,
-        };
-        const result = await createTask(client, actorId, input);
-        return textResult(result);
-      } finally {
-        client.release();
-      }
-    } catch (err) {
-      return errorResult(err);
-    }
-  },
+  withClient(async (client, actorId, params) => {
+    const input = {
+      ...params,
+      due_date: params.due_date ? new Date(params.due_date) : undefined,
+    };
+    return createTask(client, actorId, input);
+  }, { write: true }),
 );
 
 // ── list_tasks ───────────────────────────────────────────────────
@@ -94,21 +178,9 @@ server.tool(
     creator_id: z.string().optional(),
     cursor: z.string().optional(),
   },
-  async (params) => {
-    try {
-      const actorId = getActorIdFromEnv();
-      const pool = getPool();
-      const client = await pool.connect();
-      try {
-        const result = await listTasks(client, actorId, params);
-        return textResult(result);
-      } finally {
-        client.release();
-      }
-    } catch (err) {
-      return errorResult(err);
-    }
-  },
+  withClient(async (client, _actorId, params) => {
+    return listTasks(client, params);
+  }),
 );
 
 // ── get_task ─────────────────────────────────────────────────────
@@ -119,21 +191,9 @@ server.tool(
   {
     task_id: z.string(),
   },
-  async (params) => {
-    try {
-      const actorId = getActorIdFromEnv();
-      const pool = getPool();
-      const client = await pool.connect();
-      try {
-        const result = await getTask(client, actorId, params);
-        return textResult(result);
-      } finally {
-        client.release();
-      }
-    } catch (err) {
-      return errorResult(err);
-    }
-  },
+  withClient(async (client, actorId, params) => {
+    return getTask(client, actorId, params);
+  }),
 );
 
 // ── append_event ─────────────────────────────────────────────────
@@ -151,21 +211,9 @@ server.tool(
     metadata: z.record(z.string(), z.unknown()).optional(),
     idempotency_key: z.string(),
   },
-  async (params) => {
-    try {
-      const actorId = getActorIdFromEnv();
-      const pool = getPool();
-      const client = await pool.connect();
-      try {
-        const result = await appendEvent(client, actorId, params);
-        return textResult(result);
-      } finally {
-        client.release();
-      }
-    } catch (err) {
-      return errorResult(err);
-    }
-  },
+  withClient(async (client, actorId, params) => {
+    return appendEvent(client, actorId, params);
+  }, { write: true }),
 );
 
 // ── claim_task ───────────────────────────────────────────────────
@@ -177,121 +225,36 @@ server.tool(
     task_id: z.string(),
     idempotency_key: z.string(),
   },
-  async (params) => {
-    try {
-      const actorId = getActorIdFromEnv();
-      const pool = getPool();
-      const client = await pool.connect();
-      try {
-        const result = await claimTask(client, actorId, params);
-        return textResult(result);
-      } finally {
-        client.release();
-      }
-    } catch (err) {
-      return errorResult(err);
-    }
-  },
+  withClient(async (client, actorId, params) => {
+    return claimTask(client, actorId, params);
+  }, { write: true }),
 );
 
 // ── register_user (no auth) ──────────────────────────────────────
 
 server.tool(
   'register_user',
-  'Register a new user (human or agent). No authentication required.',
+  'Register a new user. No authentication required.',
   {
     name: z.string(),
-    type: z.enum(['human', 'agent']),
     public_key: z.string(),
-    parent_id: z.string().optional(),
   },
-  async (params) => {
-    try {
-      const pool = getPool();
-      const client = await pool.connect();
-      try {
-        const result = await registerUser(client, params);
-        return textResult(result);
-      } finally {
-        client.release();
-      }
-    } catch (err) {
-      return errorResult(err);
-    }
-  },
+  withClientNoAuth(async (client, params) => {
+    return registerUser(client, params);
+  }),
 );
 
 // ── get_user ─────────────────────────────────────────────────────
 
 server.tool(
   'get_user',
-  'Get a user by ID, including their agent count',
+  'Get a user by ID',
   {
     user_id: z.string(),
   },
-  async (params) => {
-    try {
-      const actorId = getActorIdFromEnv();
-      const pool = getPool();
-      const client = await pool.connect();
-      try {
-        const result = await getUser(client, actorId, params);
-        return textResult(result);
-      } finally {
-        client.release();
-      }
-    } catch (err) {
-      return errorResult(err);
-    }
-  },
-);
-
-// ── admin_pending ────────────────────────────────────────────────
-
-server.tool(
-  'admin_pending',
-  'List all users pending approval (admin only)',
-  {},
-  async () => {
-    try {
-      const actorId = getActorIdFromEnv();
-      const pool = getPool();
-      const client = await pool.connect();
-      try {
-        const result = await adminPending(client, actorId);
-        return textResult(result);
-      } finally {
-        client.release();
-      }
-    } catch (err) {
-      return errorResult(err);
-    }
-  },
-);
-
-// ── admin_approve ────────────────────────────────────────────────
-
-server.tool(
-  'admin_approve',
-  'Approve a pending user (admin only)',
-  {
-    user_id: z.string(),
-  },
-  async (params) => {
-    try {
-      const actorId = getActorIdFromEnv();
-      const pool = getPool();
-      const client = await pool.connect();
-      try {
-        const result = await adminApprove(client, actorId, params);
-        return textResult(result);
-      } finally {
-        client.release();
-      }
-    } catch (err) {
-      return errorResult(err);
-    }
-  },
+  withClient(async (client, actorId, params) => {
+    return getUser(client, actorId, params);
+  }),
 );
 
 // ── authenticate (no auth) ───────────────────────────────────────
@@ -305,20 +268,9 @@ server.tool(
     nonce: z.string().optional(),
     signature: z.string().optional(),
   },
-  async (params) => {
-    try {
-      const pool = getPool();
-      const client = await pool.connect();
-      try {
-        const result = await authenticate(client, params);
-        return textResult(result);
-      } finally {
-        client.release();
-      }
-    } catch (err) {
-      return errorResult(err);
-    }
-  },
+  withClientNoAuth(async (client, params) => {
+    return authenticate(client, params);
+  }),
 );
 
 // ── register_webhook ─────────────────────────────────────────────
@@ -330,21 +282,9 @@ server.tool(
     url: z.string().url(),
     events: z.array(z.string()),
   },
-  async (params) => {
-    try {
-      const actorId = getActorIdFromEnv();
-      const pool = getPool();
-      const client = await pool.connect();
-      try {
-        const result = await registerWebhook(client, actorId, params);
-        return textResult(result);
-      } finally {
-        client.release();
-      }
-    } catch (err) {
-      return errorResult(err);
-    }
-  },
+  withClient(async (client, actorId, params) => {
+    return registerWebhook(client, actorId, params);
+  }),
 );
 
 // ---------------------------------------------------------------------------
@@ -359,33 +299,14 @@ async function main() {
   await runMigrations(pool);
   console.error('[clairvoyant] Migrations complete.');
 
-  // Start staleness checker (may not exist yet)
-  try {
-    const { startStalenessChecker } = await import('./staleness.js');
-    startStalenessChecker(pool);
-    console.error('[clairvoyant] Staleness checker started.');
-  } catch {
-    console.error('[clairvoyant] Staleness checker not available, skipping.');
-  }
+  // Start staleness checker
+  const { startStalenessChecker } = await import('./staleness.js');
+  startStalenessChecker(pool);
+  console.error('[clairvoyant] Staleness checker started.');
 
-  const transportType = process.env.CV_TRANSPORT ?? 'stdio';
-
-  if (transportType === 'stdio') {
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
-    console.error('[clairvoyant] MCP server running on stdio.');
-  } else if (transportType === 'http') {
-    const { StreamableHTTPServerTransport } = await import(
-      '@modelcontextprotocol/sdk/server/streamableHttp.js'
-    );
-    const port = parseInt(process.env.CV_PORT ?? '3100', 10);
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-    await server.connect(transport);
-    console.error(`[clairvoyant] MCP server running on HTTP port ${port}.`);
-  } else {
-    console.error(`[clairvoyant] Unknown transport: ${transportType}`);
-    process.exit(1);
-  }
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error('[clairvoyant] MCP server running on stdio.');
 
   // Graceful shutdown
   const cleanup = async () => {

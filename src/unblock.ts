@@ -2,13 +2,13 @@ import pg from 'pg';
 import { randomUUID } from 'node:crypto';
 import {
   getBlockedEvents,
-  getUnblockedEventsForTask,
+  getEventsByTaskIdAndType,
   insertEvent,
   getTaskById,
   updateTask,
 } from './db/queries.js';
 import { applyEvent } from './projection.js';
-import type { Event, SideEffect } from './types.js';
+import type { SideEffect } from './types.js';
 
 /**
  * Check if any tasks blocked by `completedTaskId` can now be unblocked.
@@ -17,7 +17,7 @@ import type { Event, SideEffect } from './types.js';
  *   2. Check if the blocked task has other unresolved blockers
  *   3. If no remaining blockers, insert an 'unblocked' event
  *
- * Returns any side effects generated (e.g., webhook notifications for unblocks).
+ * Caller must have already called BEGIN on the client.
  */
 export async function checkUnblocks(
   client: pg.PoolClient,
@@ -35,7 +35,7 @@ export async function checkUnblocks(
   for (const taskId of taskIds) {
     // Get all blocked events for this task (not just ones referencing completedTaskId)
     const allBlockedForTask = await getEventsByTaskIdAndType(client, taskId, 'blocked');
-    const unblockedForTask = await getUnblockedEventsForTask(client, taskId);
+    const unblockedForTask = await getEventsByTaskIdAndType(client, taskId, 'unblocked');
 
     // A blocker is "resolved" if there's an unblocked event whose
     // metadata.resolved_by matches the blocked_by_task_id
@@ -67,7 +67,7 @@ export async function checkUnblocks(
         idempotency_key: randomUUID(),
       });
 
-      const projection = applyEvent(event, task);
+      const projection = applyEvent(event);
 
       if (Object.keys(projection.taskUpdates).length > 0) {
         await updateTask(client, taskId, task.version, projection.taskUpdates);
@@ -78,19 +78,4 @@ export async function checkUnblocks(
   }
 
   return allSideEffects;
-}
-
-/**
- * Helper: get events for a task filtered by type.
- */
-async function getEventsByTaskIdAndType(
-  client: pg.PoolClient,
-  taskId: string,
-  eventType: string,
-): Promise<Event[]> {
-  const { rows } = await client.query<Event>(
-    `SELECT * FROM events WHERE task_id = $1 AND event_type = $2 ORDER BY created_at ASC`,
-    [taskId, eventType],
-  );
-  return rows;
 }

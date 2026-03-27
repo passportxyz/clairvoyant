@@ -8,7 +8,6 @@ import {
   getEventByIdempotencyKey,
   getUserById,
 } from '../db/queries.js';
-import { applyEvent } from '../projection.js';
 import type { Task, Event } from '../types.js';
 
 // ── createTask ────────────────────────────────────────────────────
@@ -21,10 +20,13 @@ export interface CreateTaskInput {
   priority?: number;
   due_date?: Date;
   tags?: string[];
-  on_behalf_of?: string;
   idempotency_key: string;
 }
 
+/**
+ * Create a new task within a transaction.
+ * Caller must have already called BEGIN on the client.
+ */
 export async function createTask(
   client: pg.PoolClient,
   actorId: string,
@@ -42,7 +44,6 @@ export async function createTask(
   if (input.owner_id) {
     const owner = await getUserById(client, input.owner_id);
     if (!owner) throw new Error(`Owner not found: ${input.owner_id}`);
-    if (owner.status !== 'active') throw new Error(`Owner is not active: ${input.owner_id}`);
   }
 
   // Validate parent_task_id if provided
@@ -69,7 +70,6 @@ export async function createTask(
   if (input.due_date !== undefined) metadata.due_date = input.due_date;
   if (input.tags !== undefined) metadata.tags = input.tags;
   if (input.owner_id !== undefined) metadata.owner_id = input.owner_id;
-  if (input.on_behalf_of !== undefined) metadata.on_behalf_of = input.on_behalf_of;
 
   // Insert the created event
   const event = await insertEvent(client, {
@@ -81,41 +81,15 @@ export async function createTask(
     idempotency_key: input.idempotency_key,
   });
 
-  // Apply projection (for 'created' events, taskUpdates is empty — no update needed)
-  applyEvent(event, task);
-
   return { task, event };
-}
-
-// ── listTasks ─────────────────────────────────────────────────────
-
-export interface ListTasksInput {
-  status?: 'open' | 'done' | 'cancelled';
-  owner_id?: string | null;
-  tags?: string[];
-  parent_task_id?: string;
-  creator_id?: string;
-  cursor?: string;
-}
-
-export async function listTasks(
-  client: pg.PoolClient,
-  _actorId: string,
-  input: ListTasksInput,
-): Promise<{ tasks: Task[]; cursor?: string }> {
-  return listTasksQuery(client, input);
 }
 
 // ── getTask ───────────────────────────────────────────────────────
 
-export interface GetTaskInput {
-  task_id: string;
-}
-
 export async function getTask(
   client: pg.PoolClient,
   _actorId: string,
-  input: GetTaskInput,
+  input: { task_id: string },
 ): Promise<{ task: Task; events: Event[] }> {
   const task = await getTaskById(client, input.task_id);
   if (!task) throw new Error(`Task not found: ${input.task_id}`);

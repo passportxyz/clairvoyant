@@ -1,14 +1,16 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { setupTestDb, teardownTestDb, withTransaction, createTestUser, createTestTask } from '../setup.js';
-import { createTask, listTasks, getTask } from '../../src/tools/tasks.js';
+import { createTask, getTask } from '../../src/tools/tasks.js';
+import { listTasks } from '../../src/db/queries.js';
 import { randomUUID } from 'node:crypto';
+import type { Task } from '../../src/types.js';
 
 beforeAll(() => setupTestDb());
 afterAll(() => teardownTestDb());
 
 describe('createTask', () => {
   it('creates a task and initial event', () => withTransaction(async (client) => {
-    const user = await createTestUser(client, { status: 'active' });
+    const user = await createTestUser(client);
     const result = await createTask(client, user.id, {
       title: 'Test task',
       body: 'Description here',
@@ -25,8 +27,8 @@ describe('createTask', () => {
   }));
 
   it('creates a task with owner_id', () => withTransaction(async (client) => {
-    const creator = await createTestUser(client, { status: 'active' });
-    const owner = await createTestUser(client, { status: 'active' });
+    const creator = await createTestUser(client);
+    const owner = await createTestUser(client);
     const result = await createTask(client, creator.id, {
       title: 'Owned task',
       body: 'Has an owner',
@@ -39,7 +41,7 @@ describe('createTask', () => {
   }));
 
   it('creates a task with parent_task_id', () => withTransaction(async (client) => {
-    const user = await createTestUser(client, { status: 'active' });
+    const user = await createTestUser(client);
     const parent = await createTestTask(client, user.id, { title: 'Parent' });
     const result = await createTask(client, user.id, {
       title: 'Child task',
@@ -52,7 +54,7 @@ describe('createTask', () => {
   }));
 
   it('returns same result for duplicate idempotency key', () => withTransaction(async (client) => {
-    const user = await createTestUser(client, { status: 'active' });
+    const user = await createTestUser(client);
     const key = randomUUID();
     const first = await createTask(client, user.id, {
       title: 'Idempotent task',
@@ -71,7 +73,7 @@ describe('createTask', () => {
   }));
 
   it('throws if owner_id does not exist', () => withTransaction(async (client) => {
-    const user = await createTestUser(client, { status: 'active' });
+    const user = await createTestUser(client);
     await expect(createTask(client, user.id, {
       title: 'Bad owner',
       body: 'Owner missing',
@@ -80,19 +82,8 @@ describe('createTask', () => {
     })).rejects.toThrow('Owner not found');
   }));
 
-  it('throws if owner is not active', () => withTransaction(async (client) => {
-    const creator = await createTestUser(client, { status: 'active' });
-    const pendingUser = await createTestUser(client, { status: 'pending' });
-    await expect(createTask(client, creator.id, {
-      title: 'Pending owner',
-      body: 'Owner is pending',
-      owner_id: pendingUser.id,
-      idempotency_key: randomUUID(),
-    })).rejects.toThrow('Owner is not active');
-  }));
-
   it('throws if parent_task_id does not exist', () => withTransaction(async (client) => {
-    const user = await createTestUser(client, { status: 'active' });
+    const user = await createTestUser(client);
     await expect(createTask(client, user.id, {
       title: 'Bad parent',
       body: 'Parent missing',
@@ -102,7 +93,7 @@ describe('createTask', () => {
   }));
 
   it('stores priority, due_date, and tags in event metadata', () => withTransaction(async (client) => {
-    const user = await createTestUser(client, { status: 'active' });
+    const user = await createTestUser(client);
     const due = new Date('2026-04-01T00:00:00Z');
     const result = await createTask(client, user.id, {
       title: 'Full metadata task',
@@ -124,74 +115,74 @@ describe('createTask', () => {
 
 describe('listTasks', () => {
   it('returns all open tasks', () => withTransaction(async (client) => {
-    const user = await createTestUser(client, { status: 'active' });
+    const user = await createTestUser(client);
     await createTask(client, user.id, { title: 'Task A', body: 'a', idempotency_key: randomUUID() });
     await createTask(client, user.id, { title: 'Task B', body: 'b', idempotency_key: randomUUID() });
 
-    const result = await listTasks(client, user.id, {});
+    const result = await listTasks(client, {});
     expect(result.tasks.length).toBeGreaterThanOrEqual(2);
-    expect(result.tasks.every(t => t.status === 'open')).toBe(true);
+    expect(result.tasks.every((t: Task) => t.status === 'open')).toBe(true);
   }));
 
   it('filters by status', () => withTransaction(async (client) => {
-    const user = await createTestUser(client, { status: 'active' });
+    const user = await createTestUser(client);
     await createTestTask(client, user.id, { status: 'open' });
     await createTestTask(client, user.id, { status: 'done' });
 
-    const openResult = await listTasks(client, user.id, { status: 'open' });
-    expect(openResult.tasks.every(t => t.status === 'open')).toBe(true);
+    const openResult = await listTasks(client, { status: 'open' });
+    expect(openResult.tasks.every((t: Task) => t.status === 'open')).toBe(true);
 
-    const doneResult = await listTasks(client, user.id, { status: 'done' });
-    expect(doneResult.tasks.every(t => t.status === 'done')).toBe(true);
+    const doneResult = await listTasks(client, { status: 'done' });
+    expect(doneResult.tasks.every((t: Task) => t.status === 'done')).toBe(true);
   }));
 
   it('filters by owner_id', () => withTransaction(async (client) => {
-    const user = await createTestUser(client, { status: 'active' });
-    const owner = await createTestUser(client, { status: 'active' });
+    const user = await createTestUser(client);
+    const owner = await createTestUser(client);
     await createTestTask(client, user.id, { owner_id: owner.id });
     await createTestTask(client, user.id); // no owner
 
-    const result = await listTasks(client, user.id, { owner_id: owner.id });
+    const result = await listTasks(client, { owner_id: owner.id });
     expect(result.tasks.length).toBeGreaterThanOrEqual(1);
-    expect(result.tasks.every(t => t.owner_id === owner.id)).toBe(true);
+    expect(result.tasks.every((t: Task) => t.owner_id === owner.id)).toBe(true);
   }));
 
   it('filters by owner_id=null to return unowned tasks', () => withTransaction(async (client) => {
-    const user = await createTestUser(client, { status: 'active' });
-    const owner = await createTestUser(client, { status: 'active' });
+    const user = await createTestUser(client);
+    const owner = await createTestUser(client);
     await createTestTask(client, user.id, { owner_id: owner.id });
     await createTestTask(client, user.id); // no owner
 
-    const result = await listTasks(client, user.id, { owner_id: null });
+    const result = await listTasks(client, { owner_id: null });
     expect(result.tasks.length).toBeGreaterThanOrEqual(1);
-    expect(result.tasks.every(t => t.owner_id === null || t.owner_id === undefined)).toBe(true);
+    expect(result.tasks.every((t: Task) => t.owner_id === null || t.owner_id === undefined)).toBe(true);
   }));
 
   it('filters by tags', () => withTransaction(async (client) => {
-    const user = await createTestUser(client, { status: 'active' });
+    const user = await createTestUser(client);
     await createTestTask(client, user.id, { tags: ['backend', 'urgent'] });
     await createTestTask(client, user.id, { tags: ['frontend'] });
 
-    const result = await listTasks(client, user.id, { tags: ['backend'] });
+    const result = await listTasks(client, { tags: ['backend'] });
     expect(result.tasks.length).toBeGreaterThanOrEqual(1);
-    expect(result.tasks.every(t => t.tags.includes('backend'))).toBe(true);
+    expect(result.tasks.every((t: Task) => t.tags.includes('backend'))).toBe(true);
   }));
 
   it('filters by creator_id', () => withTransaction(async (client) => {
-    const userA = await createTestUser(client, { status: 'active' });
-    const userB = await createTestUser(client, { status: 'active' });
+    const userA = await createTestUser(client);
+    const userB = await createTestUser(client);
     await createTestTask(client, userA.id);
     await createTestTask(client, userB.id);
 
-    const result = await listTasks(client, userA.id, { creator_id: userA.id });
+    const result = await listTasks(client, { creator_id: userA.id });
     expect(result.tasks.length).toBeGreaterThanOrEqual(1);
-    expect(result.tasks.every(t => t.creator_id === userA.id)).toBe(true);
+    expect(result.tasks.every((t: Task) => t.creator_id === userA.id)).toBe(true);
   }));
 });
 
 describe('getTask', () => {
   it('returns task with events', () => withTransaction(async (client) => {
-    const user = await createTestUser(client, { status: 'active' });
+    const user = await createTestUser(client);
     const created = await createTask(client, user.id, {
       title: 'Get me',
       body: 'Task body',
@@ -206,7 +197,7 @@ describe('getTask', () => {
   }));
 
   it('throws for non-existent task', () => withTransaction(async (client) => {
-    const user = await createTestUser(client, { status: 'active' });
+    const user = await createTestUser(client);
     await expect(
       getTask(client, user.id, { task_id: '00000000-0000-0000-0000-000000000000' }),
     ).rejects.toThrow('Task not found');

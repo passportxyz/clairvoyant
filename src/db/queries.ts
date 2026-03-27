@@ -1,7 +1,6 @@
 import pg from 'pg';
 import type {
   User,
-  UserStatus,
   Task,
   TaskStatus,
   Event,
@@ -27,25 +26,14 @@ export async function insertUser(
   client: pg.PoolClient,
   params: {
     name: string;
-    type: string;
-    status: string;
-    is_admin: boolean;
     public_key: string;
-    parent_id?: string;
   },
 ): Promise<User> {
   const { rows } = await client.query<User>(
-    `INSERT INTO users (name, type, status, is_admin, public_key, parent_id)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO users (name, public_key)
+     VALUES ($1, $2)
      RETURNING *`,
-    [
-      params.name,
-      params.type,
-      params.status,
-      params.is_admin,
-      params.public_key,
-      params.parent_id ?? null,
-    ],
+    [params.name, params.public_key],
   );
   return rows[0];
 }
@@ -70,27 +58,6 @@ export async function getUserByPublicKey(
     [publicKey],
   );
   return rows[0] ?? null;
-}
-
-export async function getPendingUsers(
-  client: pg.PoolClient,
-): Promise<User[]> {
-  const { rows } = await client.query<User>(
-    "SELECT * FROM users WHERE status = 'pending' ORDER BY created_at ASC",
-  );
-  return rows;
-}
-
-export async function updateUserStatus(
-  client: pg.PoolClient,
-  id: string,
-  status: UserStatus,
-): Promise<User> {
-  const { rows } = await client.query<User>(
-    'UPDATE users SET status = $1 WHERE id = $2 RETURNING *',
-    [status, id],
-  );
-  return rows[0];
 }
 
 // ── Task queries ───────────────────────────────────────────────────
@@ -132,6 +99,20 @@ export async function getTaskById(
 ): Promise<Task | null> {
   const { rows } = await client.query<Task>(
     'SELECT * FROM tasks WHERE id = $1',
+    [id],
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * Lock a task row for update (prevents concurrent claim races).
+ */
+export async function getTaskByIdForUpdate(
+  client: pg.PoolClient,
+  id: string,
+): Promise<Task | null> {
+  const { rows } = await client.query<Task>(
+    'SELECT * FROM tasks WHERE id = $1 FOR UPDATE',
     [id],
   );
   return rows[0] ?? null;
@@ -214,6 +195,11 @@ export async function listTasks(
   return { tasks: rows, cursor: nextCursor };
 }
 
+// Column allowlist for updateTask — prevents SQL injection via event metadata
+const ALLOWED_TASK_COLUMNS = new Set([
+  'title', 'status', 'owner_id', 'priority', 'due_date', 'tags', 'updated_at',
+]);
+
 export async function updateTask(
   client: pg.PoolClient,
   id: string,
@@ -225,6 +211,10 @@ export async function updateTask(
   let paramIdx = 1;
 
   for (const [column, value] of Object.entries(updates)) {
+    if (column === 'updated_at') continue; // already handled above
+    if (!ALLOWED_TASK_COLUMNS.has(column)) {
+      throw new Error(`Column '${column}' is not allowed in task updates`);
+    }
     setClauses.push(`${column} = $${paramIdx++}`);
     values.push(value);
   }
@@ -307,16 +297,16 @@ export async function getBlockedEvents(
   return rows;
 }
 
-export async function getUnblockedEventsForTask(
+export async function getEventsByTaskIdAndType(
   client: pg.PoolClient,
   taskId: string,
+  eventType: string,
 ): Promise<Event[]> {
   const { rows } = await client.query<Event>(
     `SELECT * FROM events
-     WHERE task_id = $1
-       AND event_type = 'unblocked'
+     WHERE task_id = $1 AND event_type = $2
      ORDER BY created_at ASC`,
-    [taskId],
+    [taskId, eventType],
   );
   return rows;
 }

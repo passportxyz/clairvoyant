@@ -23,7 +23,6 @@ export { CV_DIR, CONFIG_PATH, TOKEN_PATH, KEY_PATH, PUBKEY_PATH };
 
 export interface CvConfig {
   user_id?: string;
-  server_url?: string;
 }
 
 export async function ensureCvDir(): Promise<void> {
