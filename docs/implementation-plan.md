@@ -164,7 +164,7 @@ Hosted MCP server — any Claude Code instance or agent installs it and can inte
 
 ### CLI (`cv`)
 
-Thin wrapper around the same API for non-MCP contexts and scripting:
+Thin wrapper around the same API for agents and scripting. Humans talk to their agents; agents talk to Clairvoyant. AI is the UI.
 
 ```bash
 cv init                          # generate or link SSH keypair
