@@ -1,18 +1,18 @@
-# The Clairvoyant
+# The Clairvoyant — Implementation Plan
 
-An event-sourced task management system built for human/agent collaboration. Clairvoyant sees across all the moving pieces — who's working on what, what's blocked, and where things need to go next. The core primitive is the **handoff**: every task has a ball, and it's always in someone's court.
+An event-sourced task management system for human/agent collaboration. This document covers everything needed to build the core system. AI is the UI — humans talk to agents, agents talk to Clairvoyant.
 
-## Why
+## Scope
 
-Tasks pile up in people's heads. Agents can help, but there's no clean way to pass work back and forth between humans and AI. Existing tools don't understand that an agent might do 80% of a task and need a human for the last 20%.
+**In scope:** API server, database, MCP server, CLI, SKILL.md, webhooks, auth, staleness alerts.
 
-Clairvoyant makes that handoff loop explicit, low-friction, and visible. Over time, more handoffs go agent→done instead of agent→human. The system doesn't force automation — it starts manual and you automate what makes sense, piece by piece.
+**Out of scope:** Triage bot, community agents, per-user agents. These are consumers of the system built in separate repos. The core system just needs to support them well — the right events, the right queries, the right webhooks. A separate spec will be provided for agent implementors.
 
 ## Architecture
 
 ### Event Sourcing
 
-Every action is an append-only event. The `tasks` table is a materialized view kept in sync via **synchronous projection** — every event insert updates the tasks row in the same Postgres transaction. Reads are always fast (just query `tasks`), and the event log is the full audit trail.
+Every action is an append-only event. The `tasks` table is a materialized view kept in sync via **synchronous projection** — every event insert updates the tasks row in the same Postgres transaction.
 
 ```sql
 BEGIN;
@@ -21,251 +21,588 @@ UPDATE tasks SET status = $new, owner_id = $new, version = version + 1 WHERE id 
 COMMIT;
 ```
 
-Every field change is an event — when a bot sets priority and a human overrides it, both are visible in the history. You always know who decided what and when.
+The projection logic lives in a single function (`applyEvent`) that takes an event and returns the SQL updates for the tasks row. This function is the heart of the system — every behavior change flows through it.
 
-### Data Model
+### Project Structure
 
-**tasks** (materialized current state — updated synchronously on every event)
 ```
-id              uuid
-title           text
-status          open | done | cancelled
-owner_id        uuid?       -- who has the ball (null = unowned, available for pickup)
-creator_id      uuid        -- who created it
-parent_task_id  uuid?       -- for subtask lineage
-priority        text?       -- set by triage bot or human, not required at creation
-due_date        timestamp?  -- only for real deadlines, not required at creation
-tags            text[]      -- inferred by triage bot or set explicitly
-version         integer     -- optimistic locking, incremented on every event
-created_at      timestamp
-updated_at      timestamp
-```
-
-**events** (the source of truth — append only, never edited)
-```
-id              uuid
-task_id         uuid
-event_type      created | note | progress | handoff | claimed | blocked | unblocked | field_changed | completed | cancelled
-actor_id        uuid        -- who did this (human or agent)
-body            text        -- the meat: description, progress update, context
-metadata        jsonb       -- structured data (see below)
-idempotency_key uuid        -- unique, prevents duplicate events on retry
-created_at      timestamp
-```
-
-Event types:
-- `created` — task created. Body is the description. Metadata: `{ priority?, due_date?, tags?, owner_id?, on_behalf_of? }`
-- `note` — context or commentary. No state change.
-- `progress` — work update. No state change, just records what was done.
-- `handoff` — ownership transfer. Metadata: `{ from_user_id?, to_user_id, reason? }`
-- `claimed` — agent/human picks up an unowned task. Metadata: `{ user_id }`
-- `blocked` — something is preventing progress. Metadata: `{ reason, blocked_by_task_id?, capability_gap? }`. If `blocked_by_task_id` is set, this is a dependency — automatically resolved when that task completes.
-- `unblocked` — dependency resolved or blocker cleared. System-generated when a blocking task completes.
-- `field_changed` — priority, tags, due_date, etc. Metadata: `{ field, old_value, new_value }`
-- `completed` — task is done. Status → `done`.
-- `cancelled` — task is no longer needed. Status → `cancelled`.
-
-"Notes" and "progress" are the same thing conceptually — events with a body. The first event is the description. Subsequent events are the story. An agent picking up a task reads the event stream top to bottom and has full context.
-
-**users** (humans and agents are both users)
-```
-id              uuid
-name            text
-type            human | agent
-status          pending | active     -- pending until approved by admin
-is_admin        boolean              -- set manually in DB for now
-public_key      text        -- SSH public key for auth + future encryption
-parent_id       uuid?       -- agents link to their parent human
-created_at      timestamp
+clairvoyant/
+├── src/
+│   ├── server.ts              -- Express app setup, middleware
+│   ├── routes/
+│   │   ├── tasks.ts           -- /tasks endpoints
+│   │   ├── events.ts          -- /tasks/:id/events, /tasks/:id/claim
+│   │   ├── users.ts           -- /users, /admin endpoints
+│   │   └── webhooks.ts        -- /webhooks endpoints
+│   ├── db/
+│   │   ├── pool.ts            -- pg Pool setup, connection config
+│   │   ├── queries.ts         -- raw SQL queries as named exports
+│   │   └── migrate.ts         -- migration runner
+│   ├── projection.ts          -- applyEvent() — event → task state changes
+│   ├── webhooks.ts            -- webhook dispatch logic
+│   ├── staleness.ts           -- periodic check for unowned tasks
+│   ├── auth.ts                -- SSH signature verification middleware
+│   └── types.ts               -- shared TypeScript types
+├── migrations/
+│   ├── 001_create_users.sql
+│   ├── 002_create_tasks.sql
+│   ├── 003_create_events.sql
+│   └── 004_create_webhooks.sql
+├── mcp/
+│   ├── server.ts              -- MCP server entry point
+│   ├── tools.ts               -- tool definitions (maps to API endpoints)
+│   └── SKILL.md               -- agent guidance document
+├── cli/
+│   ├── cv.ts                  -- CLI entry point
+│   └── commands/              -- one file per command group
+├── test/
+│   ├── setup.ts               -- test DB, migrations, transaction wrapper
+│   ├── projection.test.ts
+│   ├── tasks.test.ts
+│   ├── events.test.ts
+│   ├── users.test.ts
+│   ├── auth.test.ts
+│   └── webhooks.test.ts
+├── package.json
+├── tsconfig.json
+├── vitest.config.ts
+└── docker-compose.yml         -- Postgres for local dev + test
 ```
 
-### User Registration
+## Data Model
 
-Registration is gated — you can't just show up and start using the system.
-
-**Humans:**
-1. `cv init` generates an SSH keypair locally
-2. `cv auth register` sends the public key + name to the server
-3. The user lands in `pending` status
-4. An admin runs `cv admin pending` to see pending registrations, then `cv admin approve <user_id>` to activate them
-
-**Agents:**
-- Only an active human can create agents. The agent's `parent_id` links to the human who created it.
-- Agent registration is immediate — no approval needed, since the parent human is already trusted.
-- Community/shared agents (serving multiple people, not owned by one human) can be created by admins.
-
-**Admin status** is an `is_admin` boolean on the users table, set manually in the database for now. The first user bootstraps by setting it directly in Postgres. Admin operations are also exposed via the MCP server for agent-driven workflows.
-
-### Authorization
-
-Open by design. Any authenticated user can modify any task. The audit trail is the safety net — every action is recorded with who did it and when. This keeps agent interactions simple and avoids complex permission logic that would create friction.
-
-### Task States
-
-Three states: **open**, **done**, **cancelled**. That's it.
-
-"Blocked" and "active" aren't states — they're context in the event stream. A task with a recent `blocked` event is blocked. A task with recent `progress` events is active. But the task is still just `open`. The events tell the full story; the status field tells you whether it still needs to be done.
-
-### Task Dependencies
-
-When the triage bot (or anyone) realizes task B can't start until task A is done:
-
-1. Append a `blocked` event to task B with `metadata: { blocked_by_task_id: task_A_id }`
-2. When task A completes, the system automatically checks for tasks blocked by A
-3. System appends an `unblocked` event to those tasks
-4. The triage bot or assigned agent sees the unblocked event and resumes work
-
-Dependencies are expressed as events, not schema fields. Multiple dependencies = multiple blocked events. A task is considered dependency-blocked if it has any unresolved `blocked` events with `blocked_by_task_id` set.
-
-### Concurrent Claims — Optimistic Locking
-
-The `version` column on `tasks` prevents race conditions. When two agents try to claim the same unowned task:
+### migrations/001_create_users.sql
 
 ```sql
-UPDATE tasks SET owner_id = $agent, version = version + 1
-  WHERE id = $task_id AND owner_id IS NULL AND version = $expected;
--- 0 rows affected = someone else got it first
+CREATE TABLE users (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name        text NOT NULL,
+  type        text NOT NULL CHECK (type IN ('human', 'agent')),
+  status      text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'active')),
+  is_admin    boolean NOT NULL DEFAULT false,
+  public_key  text NOT NULL UNIQUE,
+  parent_id   uuid REFERENCES users(id),
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_users_status ON users(status);
+CREATE INDEX idx_users_parent_id ON users(parent_id);
 ```
 
-The loser gets a conflict response and moves on to the next task.
+### migrations/002_create_tasks.sql
 
-### Webhooks
+```sql
+CREATE TABLE tasks (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  title           text NOT NULL,
+  status          text NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'done', 'cancelled')),
+  owner_id        uuid REFERENCES users(id),
+  creator_id      uuid NOT NULL REFERENCES users(id),
+  parent_task_id  uuid REFERENCES tasks(id),
+  priority        text,
+  due_date        timestamptz,
+  tags            text[] NOT NULL DEFAULT '{}',
+  version         integer NOT NULL DEFAULT 1,
+  created_at      timestamptz NOT NULL DEFAULT now(),
+  updated_at      timestamptz NOT NULL DEFAULT now()
+);
 
-The handoff is the core primitive — when ownership changes, consumers need to know. Clairvoyant fires webhooks on ownership changes (handoff, claimed, task creation with owner). Consumers configure endpoints to wire into Telegram, Slack, email, or whatever.
+CREATE INDEX idx_tasks_status ON tasks(status);
+CREATE INDEX idx_tasks_owner_id ON tasks(owner_id);
+CREATE INDEX idx_tasks_creator_id ON tasks(creator_id);
+CREATE INDEX idx_tasks_parent_task_id ON tasks(parent_task_id);
+CREATE INDEX idx_tasks_status_owner ON tasks(status, owner_id) WHERE status = 'open' AND owner_id IS NULL;
+```
 
-### Staleness Alerts
+The composite index on `(status, owner_id) WHERE status = 'open' AND owner_id IS NULL` is specifically for the triage query — "give me all unowned open tasks" needs to be fast.
 
-If tasks sit unowned for too long (configurable, default 1 hour), the system fires a notification. This prevents silent failures when the triage bot is down.
+### migrations/003_create_events.sql
 
-### Task Lifecycle
+```sql
+CREATE TABLE events (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  task_id         uuid NOT NULL REFERENCES tasks(id),
+  event_type      text NOT NULL CHECK (event_type IN (
+    'created', 'note', 'progress', 'handoff', 'claimed',
+    'blocked', 'unblocked', 'field_changed', 'completed', 'cancelled'
+  )),
+  actor_id        uuid NOT NULL REFERENCES users(id),
+  body            text,
+  metadata        jsonb NOT NULL DEFAULT '{}',
+  idempotency_key uuid NOT NULL UNIQUE,
+  created_at      timestamptz NOT NULL DEFAULT now()
+);
 
-1. **Someone creates a task** — a human via CLI, an agent on its own, or an agent on behalf of a human (e.g. a community bot that takes requests from Telegram). Rich description in the first event's body. No owner by default (goes to the triage pool). Use `--owner` to claim it immediately if you don't need triage.
-2. **Triage bot picks up unowned tasks** — evaluates the task. Can it just do it? Does it, marks done. Need research? Enriches with context, sets priority/tags, assigns to the right person or agent. Need a human? Assigns to creator or whoever fits.
-3. **Agent works a task** — appends progress events as it goes
-4. **Agent gets stuck** — `blocked` event with context on what's needed, optionally with `blocked_by_task_id` for dependencies
-5. **Human or system unblocks** — human provides info/access, or a dependency completes and the system auto-unblocks
-6. **Subtasks** — agent spawns child tasks with `parent_task_id` when work is genuinely separate. Parent lifecycle is managed by agents, not automatic.
-7. **Capability gaps** — surface as blocked events with `capability_gap` in metadata. Over time, the org closes gaps and more tasks go fully automated.
+CREATE INDEX idx_events_task_id ON events(task_id);
+CREATE INDEX idx_events_task_id_created ON events(task_id, created_at);
+CREATE INDEX idx_events_actor_id ON events(actor_id);
+CREATE INDEX idx_events_idempotency ON events(idempotency_key);
+```
 
-### What the System Does NOT Do
+### migrations/004_create_webhooks.sql
 
-- **No routing logic** — agents self-select tasks by tag or assignment
-- **No domain knowledge** — doesn't know about repos or which agent knows what
-- **No offline mode** — always online, single tenant per org
-- **No authorization restrictions** — open access, audit trail is the safety net
+```sql
+CREATE TABLE webhooks (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  url         text NOT NULL,
+  events      text[] NOT NULL,   -- which event types to fire on, e.g. ['handoff', 'claimed', 'completed']
+  secret      text NOT NULL,     -- HMAC secret for signature verification
+  owner_id    uuid NOT NULL REFERENCES users(id),
+  active      boolean NOT NULL DEFAULT true,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+```
 
-The system is deliberately dumb. Intelligence lives in the agents, not the data model.
+## Event Types — Detailed Specification
 
-## Interfaces
+Each event type has a specific contract for what `body` and `metadata` contain, and what projection side-effects it triggers.
 
-### MCP Server (primary)
+| Event Type | Body | Metadata | Projection |
+|---|---|---|---|
+| `created` | Task description (required) | `{ priority?, due_date?, tags?, owner_id?, on_behalf_of? }` | INSERT tasks row |
+| `note` | Commentary text | `{}` | updated_at only |
+| `progress` | What was done | `{}` | updated_at only |
+| `handoff` | Context for recipient | `{ from_user_id?, to_user_id, reason? }` | owner_id = to_user_id |
+| `claimed` | null | `{ user_id }` | owner_id = user_id |
+| `blocked` | What's blocking | `{ reason, blocked_by_task_id?, capability_gap? }` | updated_at only |
+| `unblocked` | Resolution context | `{ resolved_by? }` | updated_at only |
+| `field_changed` | null | `{ field, old_value, new_value }` | update the specified field |
+| `completed` | Completion notes | `{}` | status = 'done' |
+| `cancelled` | Reason | `{}` | status = 'cancelled' |
 
-Hosted MCP server — any Claude Code instance or agent installs it and can interact with tasks. This is the primary interface for agents. Paired with a `SKILL.md` that agents can reference for guidance on how to interact with Clairvoyant effectively — when to use which event types, what good task descriptions look like, handoff conventions, etc.
+### Projection function
 
-### CLI (`cv`)
+```typescript
+// src/projection.ts
+interface ProjectionResult {
+  taskUpdates: Record<string, unknown>;  // fields to SET on the tasks row
+  sideEffects: SideEffect[];             // webhooks to fire, unblock checks, etc.
+}
 
-Thin wrapper around the same API for agents that don't support MCP. Paired with SKILL.md so the agent knows how to use it.
+function applyEvent(event: Event, currentTask: Task): ProjectionResult {
+  // Switch on event_type, return the updates + side effects
+  // This is pure logic — no DB calls, easy to test
+}
+```
+
+The side effects array can include:
+- `{ type: 'webhook', eventType: string }` — fire matching webhooks
+- `{ type: 'check_unblocks', taskId: string }` — when a task completes, check if other tasks were blocked by it
+- `{ type: 'staleness_reset' }` — task got an owner, cancel any pending staleness alert
+
+## API Endpoints — Detailed
+
+### POST /tasks
+
+Create a task. The first event (`created`) is inserted atomically with the task row.
+
+```typescript
+// Request
+{
+  title: string;
+  body: string;                    // description — becomes the created event's body
+  owner_id?: string;               // claim immediately (skip triage)
+  parent_task_id?: string;
+  priority?: string;
+  due_date?: string;               // ISO 8601
+  tags?: string[];
+  on_behalf_of?: string;           // user ID if creating on behalf of someone
+  idempotency_key: string;
+}
+
+// Response 201
+{
+  task: Task;
+  event: Event;                    // the created event
+}
+```
+
+Validation:
+- `actor_id` comes from auth (the authenticated user)
+- If `owner_id` is set, that user must exist and be active
+- If `parent_task_id` is set, that task must exist
+- `idempotency_key` must be unique — if a duplicate is received, return the existing task/event (idempotent retry)
+
+### GET /tasks
+
+List tasks with filters. Returns the materialized task rows (fast reads).
+
+```
+GET /tasks?status=open&owner_id=<uuid>
+GET /tasks?status=open&owner_id=null        -- unowned tasks (triage pool)
+GET /tasks?tags=backend,urgent              -- AND filter on tags
+GET /tasks?parent_task_id=<uuid>            -- subtasks of a parent
+GET /tasks?creator_id=<uuid>                -- tasks I created
+```
+
+Response includes pagination via cursor (task `created_at` + `id`).
+
+```typescript
+// Response 200
+{
+  tasks: Task[];
+  cursor?: string;                 // opaque cursor for next page
+}
+```
+
+### GET /tasks/:id
+
+Single task with its full event history.
+
+```typescript
+// Response 200
+{
+  task: Task;
+  events: Event[];                 // ordered by created_at ASC
+}
+```
+
+### POST /tasks/:id/events
+
+Append an event to a task. This is the primary write operation.
+
+```typescript
+// Request
+{
+  event_type: string;
+  body?: string;
+  metadata?: Record<string, unknown>;
+  idempotency_key: string;
+}
+
+// Response 201
+{
+  event: Event;
+  task: Task;                      // updated task state after projection
+}
+```
+
+Validation:
+- Task must exist and not be in a terminal state (done/cancelled) — unless the event is `note` (you can always add notes)
+- `event_type` must be valid
+- For `handoff`: `metadata.to_user_id` must be a valid active user
+- For `claimed`: task must have `owner_id = null`
+- For `field_changed`: `metadata.field` must be an allowed field, `metadata.old_value` must match current value (optimistic check)
+- For `completed`/`cancelled`: triggers side effect to check for blocked tasks that depend on this one
+
+The version check happens in the projection transaction:
+```sql
+UPDATE tasks SET ..., version = version + 1
+  WHERE id = $task_id AND version = $expected;
+```
+If 0 rows affected → return 409 Conflict.
+
+### POST /tasks/:id/claim
+
+Convenience endpoint — atomic claim with optimistic locking. Equivalent to appending a `claimed` event, but with an explicit conflict check on `owner_id IS NULL`.
+
+```typescript
+// Request
+{
+  idempotency_key: string;
+}
+
+// Response 200 — you got it
+{
+  event: Event;
+  task: Task;
+}
+
+// Response 409 — someone else got it
+{
+  error: "already_claimed";
+  owner_id: string;                // who has it now
+}
+```
+
+### POST /users
+
+Register a new user. Lands in `pending` status for humans.
+
+```typescript
+// Request
+{
+  name: string;
+  type: "human" | "agent";
+  public_key: string;              // SSH public key
+  parent_id?: string;              // required for agents
+}
+
+// Response 201
+{
+  user: User;                      // status = pending (for humans) or active (for agents with active parent)
+}
+```
+
+Validation:
+- `public_key` must be unique
+- For agents: `parent_id` must reference an active human or admin
+- For agents: status is immediately `active` (parent is trusted)
+- For humans: status is `pending`
+
+### GET /users/:id
+
+```typescript
+// Response 200
+{
+  user: User;
+  agent_count?: number;            // how many agents this user has (if human)
+}
+```
+
+### GET /admin/pending
+
+List pending user registrations. Requires `is_admin = true`.
+
+```typescript
+// Response 200
+{
+  users: User[];                   // where status = pending
+}
+```
+
+### POST /admin/approve/:id
+
+Approve a pending user. Requires `is_admin = true`.
+
+```typescript
+// Response 200
+{
+  user: User;                      // status = active now
+}
+```
+
+### POST /webhooks
+
+Register a webhook endpoint.
+
+```typescript
+// Request
+{
+  url: string;
+  events: string[];                // event types to subscribe to
+}
+
+// Response 201
+{
+  webhook: Webhook;
+  secret: string;                  // generated server-side, shown once
+}
+```
+
+## Auth — SSH Signature Verification
+
+Every request is signed with the user's SSH private key. The server verifies using the registered public key.
+
+### How it works
+
+1. Client constructs a signing payload: `METHOD\nPATH\nTIMESTAMP\nBODY_HASH`
+2. Client signs the payload with their SSH private key
+3. Client sends headers: `X-CV-User-Id`, `X-CV-Timestamp`, `X-CV-Signature`
+4. Server looks up the user's public key, verifies the signature, checks timestamp is within 5 minutes
+
+```typescript
+// src/auth.ts — Express middleware
+async function authenticate(req, res, next) {
+  const userId = req.headers['x-cv-user-id'];
+  const timestamp = req.headers['x-cv-timestamp'];
+  const signature = req.headers['x-cv-signature'];
+
+  // 1. Look up user, check status = active
+  // 2. Verify timestamp is within 5-minute window
+  // 3. Reconstruct signing payload
+  // 4. Verify signature against user's public_key using ssh-keygen or node crypto
+  // 5. Set req.user and continue
+}
+```
+
+The CLI and MCP server both handle signing transparently — the agent never has to think about it.
+
+### Key format
+
+Standard SSH ed25519 keys. The CLI generates them with `ssh-keygen`. Node's `crypto` module can verify ed25519 signatures natively.
+
+## Webhooks — Dispatch
+
+When a side effect includes `{ type: 'webhook' }`, the system:
+
+1. Queries `webhooks` table for active webhooks matching the event type
+2. For each match, POST to the URL with:
+   - Body: `{ event, task }` (the event that triggered it + current task state)
+   - Header: `X-CV-Signature` — HMAC-SHA256 of the body using the webhook's secret
+3. Fire-and-forget for v1 — log failures but don't retry. Retry logic is a future enhancement.
+
+Webhook dispatch happens asynchronously after the transaction commits — it should not block the API response.
+
+## Staleness Alerts
+
+A periodic job (runs every minute via `setInterval`) that:
+
+1. Queries for open tasks where `owner_id IS NULL` and `created_at < now() - interval`
+2. For tasks that haven't already been alerted, fires a webhook event of type `stale`
+3. Tracks which tasks have been alerted to avoid duplicate notifications
+
+The staleness interval is configurable via environment variable (`CV_STALENESS_INTERVAL_MS`, default 3600000 / 1 hour).
+
+This is a simple in-process check, not a separate worker. If the server restarts, it just re-checks on the next interval.
+
+## Dependency Auto-Unblock
+
+When a `completed` or `cancelled` event is processed:
+
+1. Query events table for `blocked` events where `metadata->>'blocked_by_task_id' = completed_task_id`
+2. For each blocked task, check if it has any OTHER unresolved `blocked` events with `blocked_by_task_id` set
+3. If no remaining blockers, insert an `unblocked` event with `metadata: { resolved_by: completed_task_id }`
+
+"Unresolved" means: there's a `blocked` event with a `blocked_by_task_id`, and no subsequent `unblocked` event referencing the same blocker.
+
+## MCP Server
+
+The MCP server exposes the same operations as the REST API as MCP tools. It's a thin wrapper.
+
+### Tools
+
+| Tool | Maps to |
+|---|---|
+| `create_task` | POST /tasks |
+| `list_tasks` | GET /tasks |
+| `get_task` | GET /tasks/:id |
+| `append_event` | POST /tasks/:id/events |
+| `claim_task` | POST /tasks/:id/claim |
+| `register_user` | POST /users |
+| `get_user` | GET /users/:id |
+| `admin_pending` | GET /admin/pending |
+| `admin_approve` | POST /admin/approve/:id |
+| `register_webhook` | POST /webhooks |
+
+The MCP server handles auth by storing the SSH keypair in its configuration. Each agent instance has its own identity.
+
+## CLI (`cv`)
+
+For agents that don't support MCP. The CLI handles SSH key management and request signing transparently.
 
 ```bash
-cv init                          # generate or link SSH keypair
+cv init                          # generate SSH keypair
 cv auth register                 # register public key with server
-cv add "Fix the login bug"       # create a task (unowned, goes to triage pool)
-cv add "My thing" --owner me     # create and claim it yourself
-cv list --mine                   # what's on my plate
-cv list --unowned                # what's in the triage pool
+cv add "Fix the login bug"       # create task (unowned)
+cv add "My thing" --owner me     # create and self-assign
+cv list --mine                   # my tasks
+cv list --unowned                # triage pool
 cv claim 47                      # pick up a task
-cv progress 47 "Found the root cause, working on fix"
-cv handoff 47 --to lucian --context "Need DB credentials"
-cv block 47 --depends-on 32     # task 47 can't start until task 32 is done
+cv progress 47 "Found the root cause"
+cv note 47 "Context for whoever picks this up"
+cv handoff 47 --to <user_id> --context "Need DB credentials"
+cv block 47 --depends-on 32     # dependency
 cv done 47
+cv cancel 47
 cv admin pending                 # list pending registrations (admin only)
-cv admin approve <user_id>       # approve a pending user (admin only)
+cv admin approve <user_id>       # approve user (admin only)
 ```
 
-### SKILL.md
+Each command maps directly to an API call. The CLI stores the keypair at `~/.cv/id_ed25519` and the server URL at `~/.cv/config`.
 
-A companion document shipped alongside the MCP tools and CLI. Any agent can reference it to understand:
-- What Clairvoyant is and how it works
-- How to create, claim, and hand off tasks
-- What good task descriptions look like
-- When to use `blocked` vs `progress` vs `note`
-- Conventions for dependencies and subtasks
-- How to report capability gaps
+## SKILL.md
 
-This is the "how to be a good Clairvoyant citizen" guide for agents.
+Shipped with both MCP server and CLI. Explains to agents:
+- What Clairvoyant is and the handoff model
+- When to use each event type
+- What a good task description looks like
+- How to report capability gaps vs regular blockers
+- Conventions for subtasks and dependencies
+- How `on_behalf_of` works for acting on behalf of humans
 
-### Auth
-
-SSH keypairs, managed by the CLI. Public key registered with the server, requests signed with private key. No passwords, no tokens to rotate.
-
-### API Endpoints
-
-```
-POST   /tasks                  -- create task
-GET    /tasks                  -- list tasks (filterable by status, owner, tags, unowned)
-GET    /tasks/:id              -- single task + event history
-POST   /tasks/:id/events       -- append event
-POST   /tasks/:id/claim        -- atomic claim (optimistic lock)
-POST   /users                  -- register user (lands in pending)
-GET    /users/:id              -- user info
-GET    /admin/pending          -- list pending registrations (admin only)
-POST   /admin/approve/:id      -- approve a pending user (admin only)
-POST   /webhooks               -- register webhook endpoint
-```
-
-## Deployment
-
-- **API server** — Node/TypeScript, Express, TLS
-- **Database** — Postgres with migrations (node-pg-migrate or similar)
-- **Agent workers** — Claude Code SDK
-- **Container** — runs alongside existing infrastructure, uses broker server for GitHub credentials
-
-### The Triage Bot
-
-Not part of the core product — it's a pattern. A triage bot is just another registered user that queries for unowned tasks, evaluates them, and either completes them directly, enriches them with research and game plans, or assigns them to the right person/agent. Deploy it alongside Clairvoyant for the "it just works" experience. Per-user agents are the optional power-user layer.
-
-### Community Agents
-
-Agents that serve a group rather than one person — a Telegram bot that takes task requests from a channel, a Slack bot that lets anyone file work, etc. These are first-class citizens:
-
-- Registered as `type: agent` with an admin as parent (or org-level parent)
-- When creating tasks on behalf of a human, set `on_behalf_of` in the `created` event metadata to record who actually requested it
-- The `actor_id` on the event is the agent; `on_behalf_of` is the human — full provenance in the audit trail
-- Community agents can create tasks, add notes, and hand off work just like any other user
-
-This means a person can say "hey bot, remind the team to update the docs" in Telegram, and the community agent creates a task with itself as `actor_id` and the requester as `on_behalf_of`. The event stream tells the whole story.
-
-## Tech Stack
-
-- TypeScript / Node.js
-- PostgreSQL (with migrations)
-- Express API (TLS)
-- Claude Code SDK (agent workers)
-- SSH keypair auth
+This document will be written during implementation once the API is stable.
 
 ## Testing Strategy
 
 TDD from the start. Tests run against real Postgres — no mocking the data layer.
 
-- **Vitest** — test runner (fast, native TypeScript)
-- **Supertest** — HTTP-level tests against Express endpoints
-- **Real Postgres** — test DB with migrations, no mocks (event sourcing is too core to fake)
+- **Vitest** — test runner
+- **Supertest** — HTTP-level tests against Express
+- **Real Postgres** — test DB with migrations, no mocks
 
 ### Test isolation
 
-Each test runs inside a transaction that rolls back at the end — fast, no cleanup needed, fully isolated.
+Each test runs inside a transaction that rolls back at the end.
 
-### TDD flow
+```typescript
+// test/setup.ts
+import { Pool } from 'pg';
 
-1. Write a failing test for the endpoint or behavior
-2. `beforeAll` runs migrations on the test DB
-3. Implement until green
-4. Core loop: append events → assert projected task state is correct
+let pool: Pool;
 
-### What to test first
+export async function setup() {
+  pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
+  // Run migrations
+}
 
-1. **Event projection** — create task event → task row exists with correct state
-2. **Optimistic locking** — concurrent claims → only one wins
-3. **Registration flow** — register → pending, admin approve → active
-4. **Task lifecycle** — create → claim → progress → handoff → complete
-5. **Dependencies** — block task B on A → complete A → B auto-unblocked
+export async function withTransaction(fn: (client: PoolClient) => Promise<void>) {
+  const client = await pool.connect();
+  await client.query('BEGIN');
+  try {
+    await fn(client);
+  } finally {
+    await client.query('ROLLBACK');
+    client.release();
+  }
+}
+```
+
+### What to test (in order)
+
+1. **Projection logic** — unit test `applyEvent()` with no DB. Given event + current task state → assert correct updates and side effects.
+2. **Event insertion + projection** — insert event, verify tasks row updated correctly in same transaction.
+3. **Optimistic locking** — two concurrent claims, only one succeeds.
+4. **Registration flow** — register → pending, admin approve → active, agent creation by active human → immediate active.
+5. **Auth middleware** — valid signature passes, expired timestamp rejected, unknown user rejected, pending user rejected.
+6. **Task lifecycle** — full flow: create → claim → progress → handoff → claim → complete.
+7. **Dependencies** — block B on A → complete A → B gets unblocked event.
+8. **Idempotency** — same idempotency_key twice → same response, no duplicate event.
+9. **Webhooks** — event fires → matching webhook receives POST with correct signature.
+10. **Staleness** — unowned task older than threshold → stale webhook fires.
+
+## Environment & Configuration
+
+```bash
+# .env
+DATABASE_URL=postgresql://user:pass@localhost:5432/clairvoyant
+TEST_DATABASE_URL=postgresql://user:pass@localhost:5432/clairvoyant_test
+PORT=3000
+CV_STALENESS_INTERVAL_MS=3600000   # 1 hour
+```
+
+### docker-compose.yml
+
+```yaml
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: clairvoyant
+      POSTGRES_PASSWORD: clairvoyant
+      POSTGRES_DB: clairvoyant
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
+```
+
+Test DB is created by the test setup script: `CREATE DATABASE clairvoyant_test`.
+
+## Implementation Order
+
+1. **Project scaffolding** — package.json, tsconfig, vitest config, docker-compose, test setup
+2. **Migrations** — all 4 migration files, migration runner
+3. **Projection** — `applyEvent()` with unit tests
+4. **Core API** — POST /tasks, GET /tasks, GET /tasks/:id, POST /tasks/:id/events, POST /tasks/:id/claim — with integration tests
+5. **Auth** — SSH signature middleware + tests
+6. **User management** — POST /users, admin endpoints + tests
+7. **Webhooks** — registration, dispatch, signature + tests
+8. **Staleness** — periodic check + tests
+9. **Dependency auto-unblock** — completion triggers unblock + tests
+10. **CLI** — commands wrapping API calls, key management
+11. **MCP server** — tools wrapping API calls
+12. **SKILL.md** — agent guidance document
