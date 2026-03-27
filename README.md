@@ -14,23 +14,31 @@ Clairvoyant makes that handoff loop explicit, low-friction, and visible. Over ti
 
 ### Event Sourcing
 
-There are no edits. Every action is an append-only event. The current state of a task is derived by replaying its event history. This gives you full audit trails, clean progress tracking, and the ability to reconstruct any task's journey from creation to completion.
+Every action is an append-only event. The `tasks` table is a materialized view kept in sync via **synchronous projection** — every event insert updates the tasks row in the same Postgres transaction. Reads are always fast (just query `tasks`), and the event log is the full audit trail.
+
+```sql
+BEGIN;
+INSERT INTO events (...) VALUES (...);
+UPDATE tasks SET status = $new, owner_id = $new, version = version + 1 WHERE id = $task_id AND version = $expected;
+COMMIT;
+```
 
 Every field change is an event — when a bot sets priority and a human overrides it, both are visible in the history. You always know who decided what and when.
 
 ### Data Model
 
-**tasks** (materialized current state — derived from events)
+**tasks** (materialized current state — updated synchronously on every event)
 ```
 id              uuid
 title           text
-status          pending | active | blocked | done | cancelled
+status          open | done | cancelled
 owner_id        uuid?       -- who has the ball (null = unowned, available for pickup)
 creator_id      uuid        -- who created it
 parent_task_id  uuid?       -- for subtask lineage
 priority        text?       -- set by triage bot or human, not required at creation
 due_date        timestamp?  -- only for real deadlines, not required at creation
 tags            text[]      -- inferred by triage bot or set explicitly
+version         integer     -- optimistic locking, incremented on every event
 created_at      timestamp
 updated_at      timestamp
 ```
@@ -39,14 +47,27 @@ updated_at      timestamp
 ```
 id              uuid
 task_id         uuid
-event_type      created | note | progress | handoff | blocked | completed | cancelled
+event_type      created | note | progress | handoff | claimed | blocked | unblocked | field_changed | completed | cancelled
 actor_id        uuid        -- who did this (human or agent)
 body            text        -- the meat: description, progress update, context
-metadata        jsonb       -- structured data (gap descriptions, handoff reasons, field changes, etc.)
+metadata        jsonb       -- structured data (see below)
+idempotency_key uuid        -- unique, prevents duplicate events on retry
 created_at      timestamp
 ```
 
-"Notes" and "progress" are the same thing — events with a body. The first event is the description. Subsequent events are progress updates. An agent picking up a task reads the event stream top to bottom and has full context.
+Event types:
+- `created` — task created. Body is the description. Metadata: `{ priority?, due_date?, tags?, owner_id? }`
+- `note` — context or commentary. No state change.
+- `progress` — work update. No state change, just records what was done.
+- `handoff` — ownership transfer. Metadata: `{ from_user_id?, to_user_id, reason? }`
+- `claimed` — agent/human picks up an unowned task. Metadata: `{ user_id }`
+- `blocked` — something is preventing progress. Metadata: `{ reason, blocked_by_task_id?, capability_gap? }`. If `blocked_by_task_id` is set, this is a dependency — automatically resolved when that task completes.
+- `unblocked` — dependency resolved or blocker cleared. System-generated when a blocking task completes.
+- `field_changed` — priority, tags, due_date, etc. Metadata: `{ field, old_value, new_value }`
+- `completed` — task is done. Status → `done`.
+- `cancelled` — task is no longer needed. Status → `cancelled`.
+
+"Notes" and "progress" are the same thing conceptually — events with a body. The first event is the description. Subsequent events are the story. An agent picking up a task reads the event stream top to bottom and has full context.
 
 **users** (humans and agents are both users)
 ```
@@ -58,22 +79,63 @@ parent_id       uuid?       -- agents link to their parent human
 created_at      timestamp
 ```
 
+### Authorization
+
+Open by design. Any authenticated user can modify any task. The audit trail is the safety net — every action is recorded with who did it and when. This keeps agent interactions simple and avoids complex permission logic that would create friction.
+
+### Task States
+
+Three states: **open**, **done**, **cancelled**. That's it.
+
+"Blocked" and "active" aren't states — they're context in the event stream. A task with a recent `blocked` event is blocked. A task with recent `progress` events is active. But the task is still just `open`. The events tell the full story; the status field tells you whether it still needs to be done.
+
+### Task Dependencies
+
+When the triage bot (or anyone) realizes task B can't start until task A is done:
+
+1. Append a `blocked` event to task B with `metadata: { blocked_by_task_id: task_A_id }`
+2. When task A completes, the system automatically checks for tasks blocked by A
+3. System appends an `unblocked` event to those tasks
+4. The triage bot or assigned agent sees the unblocked event and resumes work
+
+Dependencies are expressed as events, not schema fields. Multiple dependencies = multiple blocked events. A task is considered dependency-blocked if it has any unresolved `blocked` events with `blocked_by_task_id` set.
+
+### Concurrent Claims — Optimistic Locking
+
+The `version` column on `tasks` prevents race conditions. When two agents try to claim the same unowned task:
+
+```sql
+UPDATE tasks SET owner_id = $agent, version = version + 1
+  WHERE id = $task_id AND owner_id IS NULL AND version = $expected;
+-- 0 rows affected = someone else got it first
+```
+
+The loser gets a conflict response and moves on to the next task.
+
+### Webhooks
+
+The handoff is the core primitive — when ownership changes, consumers need to know. Clairvoyant fires webhooks on ownership changes (handoff, claimed, task creation with owner). Consumers configure endpoints to wire into Telegram, Slack, email, or whatever.
+
+### Staleness Alerts
+
+If tasks sit unowned for too long (configurable, default 1 hour), the system fires a notification. This prevents silent failures when the triage bot is down.
+
 ### Task Lifecycle
 
 1. **Human creates a task** — rich description in the first event's body. No owner by default (goes to the triage pool). Use `--owner` to claim it immediately if you don't need triage.
 2. **Triage bot picks up unowned tasks** — evaluates the task. Can it just do it? Does it, marks done. Need research? Enriches with context, sets priority/tags, assigns to the right person or agent. Need a human? Assigns to creator or whoever fits.
 3. **Agent works a task** — appends progress events as it goes
-4. **Agent gets stuck** — `blocked` event with handoff to a human, body explains why and what's needed
-5. **Human unblocks** — does the thing, provides info, grants access, hands back or completes
-6. **Subtasks** — agent spawns child tasks with `parent_task_id` when work is genuinely separate
-7. **Capability gaps** — surface as blocked events. Over time, the org closes gaps and more tasks go fully automated
+4. **Agent gets stuck** — `blocked` event with context on what's needed, optionally with `blocked_by_task_id` for dependencies
+5. **Human or system unblocks** — human provides info/access, or a dependency completes and the system auto-unblocks
+6. **Subtasks** — agent spawns child tasks with `parent_task_id` when work is genuinely separate. Parent lifecycle is managed by agents, not automatic.
+7. **Capability gaps** — surface as blocked events with `capability_gap` in metadata. Over time, the org closes gaps and more tasks go fully automated.
 
 ### What the System Does NOT Do
 
 - **No routing logic** — agents self-select tasks by tag or assignment
 - **No domain knowledge** — doesn't know about repos or which agent knows what
-- **No built-in notifications** — consumers set up their own polling (scheduled tasks, cron, etc.)
 - **No offline mode** — always online, single tenant per org
+- **No authorization restrictions** — open access, audit trail is the safety net
 
 The system is deliberately dumb. Intelligence lives in the agents, not the data model.
 
@@ -81,7 +143,7 @@ The system is deliberately dumb. Intelligence lives in the agents, not the data 
 
 ### MCP Server (primary)
 
-Hosted MCP server — any Claude Code instance or agent installs it and can interact with tasks. This is the primary interface for agents.
+Hosted MCP server — any Claude Code instance or agent installs it and can interact with tasks. This is the primary interface for agents. Paired with a `SKILL.md` that agents can reference for guidance on how to interact with Clairvoyant effectively — when to use which event types, what good task descriptions look like, handoff conventions, etc.
 
 ### CLI (`cv`)
 
@@ -97,19 +159,43 @@ cv list --unowned                # what's in the triage pool
 cv claim 47                      # pick up a task
 cv progress 47 "Found the root cause, working on fix"
 cv handoff 47 --to lucian --context "Need DB credentials"
+cv block 47 --depends-on 32     # task 47 can't start until task 32 is done
 cv done 47
 ```
+
+### SKILL.md
+
+A companion document shipped alongside the MCP tools and CLI. Any agent can reference it to understand:
+- What Clairvoyant is and how it works
+- How to create, claim, and hand off tasks
+- What good task descriptions look like
+- When to use `blocked` vs `progress` vs `note`
+- Conventions for dependencies and subtasks
+- How to report capability gaps
+
+This is the "how to be a good Clairvoyant citizen" guide for agents.
 
 ### Auth
 
 SSH keypairs, managed by the CLI. Public key registered with the server, requests signed with private key. No passwords, no tokens to rotate.
 
-Future: encrypt task bodies with recipient's public key for private tasks.
+### API Endpoints
+
+```
+POST   /tasks                  -- create task
+GET    /tasks                  -- list tasks (filterable by status, owner, tags, unowned)
+GET    /tasks/:id              -- single task + event history
+POST   /tasks/:id/events       -- append event
+POST   /tasks/:id/claim        -- atomic claim (optimistic lock)
+POST   /users                  -- register user
+GET    /users/:id              -- user info
+POST   /webhooks               -- register webhook endpoint
+```
 
 ## Deployment
 
-- **API server** — Node/TypeScript, Express
-- **Database** — Postgres
+- **API server** — Node/TypeScript, Express, TLS
+- **Database** — Postgres with migrations (node-pg-migrate or similar)
 - **Agent workers** — Claude Code SDK
 - **Container** — runs alongside existing infrastructure, uses broker server for GitHub credentials
 
@@ -117,21 +203,10 @@ Future: encrypt task bodies with recipient's public key for private tasks.
 
 Not part of the core product — it's a pattern. A triage bot is just another registered user that queries for unowned tasks, evaluates them, and either completes them directly, enriches them with research and game plans, or assigns them to the right person/agent. Deploy it alongside Clairvoyant for the "it just works" experience. Per-user agents are the optional power-user layer.
 
-## The Automation Spectrum
-
-Any task can live anywhere on this spectrum:
-
-1. **Fully manual** — human does it, system just tracks
-2. **Agent-prepped** — agent does the homework, human executes
-3. **Agent-executed, human-approved** — agent does it, human reviews
-4. **Fully automated** — agent does it, no human needed
-
-The system doesn't assume where you are. It just makes each handoff point clean and lets you tighten the loop when you're ready. Start manual, automate what makes sense.
-
 ## Tech Stack
 
 - TypeScript / Node.js
-- PostgreSQL
-- Express API
+- PostgreSQL (with migrations)
+- Express API (TLS)
 - Claude Code SDK (agent workers)
 - SSH keypair auth
