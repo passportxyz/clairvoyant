@@ -37,9 +37,8 @@ The Clairvoyant is a task management system where humans and AI agents pass work
 
 Humans talk to their agents. Agents talk to Clairvoyant. AI is the UI.
 
-- **MCP server** — primary interface for MCP-capable agents
-- **CLI (`cv`) + SKILL.md** — for agents that don't support MCP
-- **REST API** — for everything else
+- **MCP server** — the sole interface to Clairvoyant
+- **CLI (`cv`) + SKILL.md** — MCP client for agents that don't natively support MCP
 
 ## More
 
