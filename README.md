@@ -1,8 +1,6 @@
-# Clairvoyant
+# The Clairvoyant
 
-> *The AI that sees clearly on your behalf.*
-
-Named after the Skyrim spell that reveals a glowing trail to your objective — Clairvoyant is an event-sourced task management system built for human/agent collaboration. The core primitive is the **handoff**: every task has a ball, and it's always in someone's court.
+An event-sourced task management system built for human/agent collaboration. Clairvoyant sees across all the moving pieces — who's working on what, what's blocked, and where things need to go next. The core primitive is the **handoff**: every task has a ball, and it's always in someone's court.
 
 ## Why
 
@@ -56,7 +54,7 @@ created_at      timestamp
 ```
 
 Event types:
-- `created` — task created. Body is the description. Metadata: `{ priority?, due_date?, tags?, owner_id? }`
+- `created` — task created. Body is the description. Metadata: `{ priority?, due_date?, tags?, owner_id?, on_behalf_of? }`
 - `note` — context or commentary. No state change.
 - `progress` — work update. No state change, just records what was done.
 - `handoff` — ownership transfer. Metadata: `{ from_user_id?, to_user_id, reason? }`
@@ -74,10 +72,29 @@ Event types:
 id              uuid
 name            text
 type            human | agent
+status          pending | active     -- pending until approved by admin
+is_admin        boolean              -- set manually in DB for now
 public_key      text        -- SSH public key for auth + future encryption
 parent_id       uuid?       -- agents link to their parent human
 created_at      timestamp
 ```
+
+### User Registration
+
+Registration is gated — you can't just show up and start using the system.
+
+**Humans:**
+1. `cv init` generates an SSH keypair locally
+2. `cv auth register` sends the public key + name to the server
+3. The user lands in `pending` status
+4. An admin runs `cv admin pending` to see pending registrations, then `cv admin approve <user_id>` to activate them
+
+**Agents:**
+- Only an active human can create agents. The agent's `parent_id` links to the human who created it.
+- Agent registration is immediate — no approval needed, since the parent human is already trusted.
+- Community/shared agents (serving multiple people, not owned by one human) can be created by admins.
+
+**Admin status** is an `is_admin` boolean on the users table, set manually in the database for now. The first user bootstraps by setting it directly in Postgres. Admin operations are also exposed via the MCP server for agent-driven workflows.
 
 ### Authorization
 
@@ -122,7 +139,7 @@ If tasks sit unowned for too long (configurable, default 1 hour), the system fir
 
 ### Task Lifecycle
 
-1. **Human creates a task** — rich description in the first event's body. No owner by default (goes to the triage pool). Use `--owner` to claim it immediately if you don't need triage.
+1. **Someone creates a task** — a human via CLI, an agent on its own, or an agent on behalf of a human (e.g. a community bot that takes requests from Telegram). Rich description in the first event's body. No owner by default (goes to the triage pool). Use `--owner` to claim it immediately if you don't need triage.
 2. **Triage bot picks up unowned tasks** — evaluates the task. Can it just do it? Does it, marks done. Need research? Enriches with context, sets priority/tags, assigns to the right person or agent. Need a human? Assigns to creator or whoever fits.
 3. **Agent works a task** — appends progress events as it goes
 4. **Agent gets stuck** — `blocked` event with context on what's needed, optionally with `blocked_by_task_id` for dependencies
@@ -161,6 +178,8 @@ cv progress 47 "Found the root cause, working on fix"
 cv handoff 47 --to lucian --context "Need DB credentials"
 cv block 47 --depends-on 32     # task 47 can't start until task 32 is done
 cv done 47
+cv admin pending                 # list pending registrations (admin only)
+cv admin approve <user_id>       # approve a pending user (admin only)
 ```
 
 ### SKILL.md
@@ -187,8 +206,10 @@ GET    /tasks                  -- list tasks (filterable by status, owner, tags,
 GET    /tasks/:id              -- single task + event history
 POST   /tasks/:id/events       -- append event
 POST   /tasks/:id/claim        -- atomic claim (optimistic lock)
-POST   /users                  -- register user
+POST   /users                  -- register user (lands in pending)
 GET    /users/:id              -- user info
+GET    /admin/pending          -- list pending registrations (admin only)
+POST   /admin/approve/:id      -- approve a pending user (admin only)
 POST   /webhooks               -- register webhook endpoint
 ```
 
@@ -203,6 +224,17 @@ POST   /webhooks               -- register webhook endpoint
 
 Not part of the core product — it's a pattern. A triage bot is just another registered user that queries for unowned tasks, evaluates them, and either completes them directly, enriches them with research and game plans, or assigns them to the right person/agent. Deploy it alongside Clairvoyant for the "it just works" experience. Per-user agents are the optional power-user layer.
 
+### Community Agents
+
+Agents that serve a group rather than one person — a Telegram bot that takes task requests from a channel, a Slack bot that lets anyone file work, etc. These are first-class citizens:
+
+- Registered as `type: agent` with an admin as parent (or org-level parent)
+- When creating tasks on behalf of a human, set `on_behalf_of` in the `created` event metadata to record who actually requested it
+- The `actor_id` on the event is the agent; `on_behalf_of` is the human — full provenance in the audit trail
+- Community agents can create tasks, add notes, and hand off work just like any other user
+
+This means a person can say "hey bot, remind the team to update the docs" in Telegram, and the community agent creates a task with itself as `actor_id` and the requester as `on_behalf_of`. The event stream tells the whole story.
+
 ## Tech Stack
 
 - TypeScript / Node.js
@@ -210,3 +242,30 @@ Not part of the core product — it's a pattern. A triage bot is just another re
 - Express API (TLS)
 - Claude Code SDK (agent workers)
 - SSH keypair auth
+
+## Testing Strategy
+
+TDD from the start. Tests run against real Postgres — no mocking the data layer.
+
+- **Vitest** — test runner (fast, native TypeScript)
+- **Supertest** — HTTP-level tests against Express endpoints
+- **Real Postgres** — test DB with migrations, no mocks (event sourcing is too core to fake)
+
+### Test isolation
+
+Each test runs inside a transaction that rolls back at the end — fast, no cleanup needed, fully isolated.
+
+### TDD flow
+
+1. Write a failing test for the endpoint or behavior
+2. `beforeAll` runs migrations on the test DB
+3. Implement until green
+4. Core loop: append events → assert projected task state is correct
+
+### What to test first
+
+1. **Event projection** — create task event → task row exists with correct state
+2. **Optimistic locking** — concurrent claims → only one wins
+3. **Registration flow** — register → pending, admin approve → active
+4. **Task lifecycle** — create → claim → progress → handoff → complete
+5. **Dependencies** — block task B on A → complete A → B auto-unblocked
