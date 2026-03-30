@@ -131,12 +131,15 @@ export function registerAuthCommands(program: Command): void {
     .command('register')
     .description('Register as a new user and authenticate')
     .requiredOption('--name <name>', 'Display name')
+    .option('--type <type>', 'User type: "human" or "agent"', 'agent')
     .action(async (opts) => {
+      const type = opts.type as 'human' | 'agent';
       const publicKey = await loadPublicKey();
       const privateKeyPem = await loadPrivateKey();
 
       const result = await quickCall('register_user', {
         name: opts.name,
+        type,
         public_key: publicKey,
       }, { noAuth: true }) as { user: { id: string } };
 
@@ -144,7 +147,7 @@ export function registerAuthCommands(program: Command): void {
       config.user_id = result.user.id;
       await saveConfig(config);
 
-      console.log(`Registered as: ${opts.name}`);
+      console.log(`Registered as: ${opts.name} (${type})`);
       console.log(`  User ID: ${result.user.id}`);
 
       // Automatically authenticate after registration
