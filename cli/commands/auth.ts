@@ -131,33 +131,48 @@ export function registerAuthCommands(program: Command): void {
     .command('register')
     .description('Register as a new user and authenticate')
     .requiredOption('--name <name>', 'Display name')
-    .option('--type <type>', 'User type: "human" or "agent"', 'agent')
     .action(async (opts) => {
-      const type = opts.type as 'human' | 'agent';
+      // CLI users always have keys (from cv init)
       const publicKey = await loadPublicKey();
       const privateKeyPem = await loadPrivateKey();
 
       const result = await quickCall('register_user', {
         name: opts.name,
-        type,
         public_key: publicKey,
-      }, { noAuth: true }) as { user: { id: string } };
+      }, { noAuth: true }) as {
+        user: { id: string; status: string };
+        key?: { id: string; status: string };
+        warning?: string;
+      };
 
       const config = await loadConfig();
       config.user_id = result.user.id;
       await saveConfig(config);
 
-      console.log(`Registered as: ${opts.name} (${type})`);
+      console.log(`Registered as: ${opts.name}`);
       console.log(`  User ID: ${result.user.id}`);
+      console.log(`  Status:  ${result.user.status}`);
+      if (result.key) {
+        console.log(`  Key:     ${result.key.status}`);
+      }
 
-      // Automatically authenticate after registration
-      const { saveToken } = await import('../config.js');
-      const token = await doLogin(result.user.id, privateKeyPem);
-      await saveToken(token);
+      if (result.warning) {
+        console.log(`\n  ⚠ ${result.warning}`);
+      }
 
-      console.log(`  Token: saved to ~/.cv/token`);
-      console.log();
-      console.log(`Next: cv install`);
+      // Auto-login if auto-approved
+      if (result.user.status === 'active') {
+        const { saveToken } = await import('../config.js');
+        const token = await doLogin(result.user.id, privateKeyPem);
+        await saveToken(token);
+
+        console.log(`  Token: saved to ~/.cv/token`);
+        console.log();
+        console.log(`Next: cv install`);
+      } else {
+        console.log();
+        console.log(`Next: Ask an admin to approve you: cv admin approve ${result.user.id}`);
+      }
     });
 
   // ── cv auth ──────────────────────────────────────────────────

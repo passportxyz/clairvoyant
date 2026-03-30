@@ -1,6 +1,7 @@
 import pg from 'pg';
 import type {
   User,
+  Key,
   Task,
   TaskStatus,
   Event,
@@ -26,30 +27,22 @@ export async function insertUser(
   client: pg.PoolClient,
   params: {
     name: string;
-    type: 'human' | 'agent';
-    public_key?: string;
+    status?: 'pending' | 'active';
+    is_admin?: boolean;
   },
 ): Promise<User> {
   const { rows } = await client.query<User>(
-    `INSERT INTO users (name, type, public_key)
+    `INSERT INTO users (name, status, is_admin)
      VALUES ($1, $2, $3)
      RETURNING *`,
-    [params.name, params.type, params.public_key ?? null],
+    [params.name, params.status ?? 'pending', params.is_admin ?? false],
   );
   return rows[0];
 }
 
 export async function listUsers(
   client: pg.PoolClient,
-  filters?: { type?: 'human' | 'agent' },
 ): Promise<User[]> {
-  if (filters?.type) {
-    const { rows } = await client.query<User>(
-      'SELECT * FROM users WHERE type = $1 ORDER BY created_at ASC',
-      [filters.type],
-    );
-    return rows;
-  }
   const { rows } = await client.query<User>(
     'SELECT * FROM users ORDER BY created_at ASC',
   );
@@ -67,15 +60,131 @@ export async function getUserById(
   return rows[0] ?? null;
 }
 
-export async function getUserByPublicKey(
+// ── Key queries ─────────────────────────────────────────────────────
+
+export async function insertKey(
+  client: pg.PoolClient,
+  params: {
+    user_id: string;
+    public_key: string;
+    status?: 'pending' | 'approved';
+    approved_by?: string;
+  },
+): Promise<Key> {
+  const approvedAt = params.status === 'approved' ? new Date() : null;
+  const { rows } = await client.query<Key>(
+    `INSERT INTO keys (user_id, public_key, status, approved_by, approved_at)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING *`,
+    [params.user_id, params.public_key, params.status ?? 'pending', params.approved_by ?? null, approvedAt],
+  );
+  return rows[0];
+}
+
+export async function getKeyByPublicKey(
   client: pg.PoolClient,
   publicKey: string,
-): Promise<User | null> {
-  const { rows } = await client.query<User>(
-    'SELECT * FROM users WHERE public_key = $1',
+): Promise<Key | null> {
+  const { rows } = await client.query<Key>(
+    `SELECT * FROM keys WHERE public_key = $1 AND status != 'revoked'`,
     [publicKey],
   );
   return rows[0] ?? null;
+}
+
+export async function getActiveKeyForUser(
+  client: pg.PoolClient,
+  userId: string,
+): Promise<Key | null> {
+  const { rows } = await client.query<Key>(
+    `SELECT * FROM keys WHERE user_id = $1 AND status IN ('pending', 'approved') LIMIT 1`,
+    [userId],
+  );
+  return rows[0] ?? null;
+}
+
+export async function approveKey(
+  client: pg.PoolClient,
+  keyId: string,
+  approvedBy: string,
+): Promise<Key> {
+  const { rows } = await client.query<Key>(
+    `UPDATE keys SET status = 'approved', approved_by = $2, approved_at = now()
+     WHERE id = $1 AND status = 'pending'
+     RETURNING *`,
+    [keyId, approvedBy],
+  );
+  if (!rows[0]) throw new Error('Key not found or not in pending state');
+  return rows[0];
+}
+
+export async function revokeKey(
+  client: pg.PoolClient,
+  keyId: string,
+): Promise<Key> {
+  const { rows } = await client.query<Key>(
+    `UPDATE keys SET status = 'revoked'
+     WHERE id = $1 AND status IN ('pending', 'approved')
+     RETURNING *`,
+    [keyId],
+  );
+  if (!rows[0]) throw new Error('Key not found or already revoked');
+  return rows[0];
+}
+
+// ── Admin queries ───────────────────────────────────────────────────
+
+export async function hasAnyAdmin(
+  client: pg.PoolClient,
+): Promise<boolean> {
+  const { rows } = await client.query<{ count: string }>(
+    `SELECT count(*) FROM users WHERE is_admin = true`,
+  );
+  return parseInt(rows[0].count, 10) > 0;
+}
+
+/**
+ * Acquire a transaction-scoped advisory lock for bootstrap serialization.
+ * Prevents concurrent set_admin/register_user races during the no-admin window.
+ * The lock is automatically released when the transaction commits/rolls back.
+ */
+export async function acquireBootstrapLock(client: pg.PoolClient): Promise<void> {
+  // Fixed lock ID for bootstrap operations
+  await client.query(`SELECT pg_advisory_xact_lock(7301)`);
+}
+
+export async function setAdmin(
+  client: pg.PoolClient,
+  userId: string,
+  isAdmin: boolean,
+): Promise<User> {
+  const { rows } = await client.query<User>(
+    `UPDATE users SET is_admin = $2 WHERE id = $1 RETURNING *`,
+    [userId, isAdmin],
+  );
+  if (!rows[0]) throw new Error(`User not found: ${userId}`);
+  return rows[0];
+}
+
+export async function activateUser(
+  client: pg.PoolClient,
+  userId: string,
+): Promise<User> {
+  const { rows } = await client.query<User>(
+    `UPDATE users SET status = 'active' WHERE id = $1 RETURNING *`,
+    [userId],
+  );
+  if (!rows[0]) throw new Error(`User not found: ${userId}`);
+  return rows[0];
+}
+
+export async function listPendingUsers(
+  client: pg.PoolClient,
+): Promise<User[]> {
+  const { rows } = await client.query<User>(
+    `SELECT * FROM users WHERE status = 'pending' ORDER BY created_at ASC`,
+  );
+  return rows;
 }
 
 // ── Task queries ───────────────────────────────────────────────────

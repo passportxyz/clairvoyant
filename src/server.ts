@@ -19,7 +19,10 @@ import { createTask } from './tools/tasks.js';
 import { getTask } from './tools/tasks.js';
 import { appendEvent } from './tools/events.js';
 import { claimTask } from './tools/events.js';
-import { registerUser, getUser, listUsers, authenticate } from './tools/users.js';
+import {
+  registerUser, getUser, listUsers, authenticate,
+  approveUser, setAdminTool, listPending, revokeUserKey,
+} from './tools/users.js';
 import { registerWebhook } from './tools/webhooks.js';
 import { listTasks } from './db/queries.js';
 
@@ -98,6 +101,36 @@ function withClientNoAuth<T>(handler: (client: import('pg').PoolClient, params: 
 }
 
 /**
+ * Wrap a tool that optionally uses auth (e.g. set_admin bootstrap).
+ * Passes actorId as null if no auth is present.
+ */
+function withClientOptionalAuth<T>(
+  handler: (client: import('pg').PoolClient, actorId: string | null, params: T) => Promise<unknown>,
+  opts: { write?: boolean } = {},
+) {
+  return async (params: T, extra: { authInfo?: AuthInfo }) => {
+    try {
+      const actorId = extra.authInfo?.extra?.actorId as string | undefined ?? null;
+      const pool = getPool();
+      const client = await pool.connect();
+      try {
+        if (opts.write) await client.query('BEGIN');
+        const result = await handler(client, actorId, params);
+        if (opts.write) await client.query('COMMIT');
+        return textResult(result);
+      } catch (err) {
+        if (opts.write) await client.query('ROLLBACK').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    } catch (err) {
+      return errorResult(err);
+    }
+  };
+}
+
+/**
  * Fire-and-forget side effect processing after a successful commit.
  */
 function processSideEffectsFromResult(result: unknown): void {
@@ -152,7 +185,7 @@ function createServer(): McpServer {
 
   server.tool(
     'create_task',
-    'Create a new task with title, body, and optional metadata',
+    'Create a persistent tracked work item in Clairvoyant — for cross-session coordination, delegation between agents/humans, and work that needs an audit trail. Not for ephemeral to-dos or background processes.',
     {
       title: z.string(),
       body: z.string(),
@@ -176,7 +209,7 @@ function createServer(): McpServer {
 
   server.tool(
     'list_tasks',
-    'List tasks with optional filters for status, owner, tags, parent, creator',
+    'List Clairvoyant work items with optional filters for status, owner, tags, parent, creator',
     {
       status: z.enum(['open', 'done', 'cancelled']).optional(),
       owner_id: z.string().nullable().optional(),
@@ -194,7 +227,7 @@ function createServer(): McpServer {
 
   server.tool(
     'get_task',
-    'Get a task by ID, including its full event history',
+    'Get a Clairvoyant work item by ID, including its full event history',
     {
       task_id: z.string(),
     },
@@ -207,7 +240,7 @@ function createServer(): McpServer {
 
   server.tool(
     'append_event',
-    'Append an event to a task (note, progress, handoff, field_changed, completed, cancelled, etc.)',
+    'Append an event to a Clairvoyant work item (note, progress, handoff, field_changed, completed, cancelled, etc.)',
     {
       task_id: z.string(),
       event_type: z.enum([
@@ -227,7 +260,7 @@ function createServer(): McpServer {
 
   server.tool(
     'claim_task',
-    'Claim an unowned task — sets the caller as the owner',
+    'Claim an unowned Clairvoyant work item — sets the caller as the owner',
     {
       task_id: z.string(),
       idempotency_key: z.string(),
@@ -241,22 +274,21 @@ function createServer(): McpServer {
 
   server.tool(
     'register_user',
-    'Register a new user. Type "agent" requires a public_key for auth. Type "human" is a task assignee only. No authentication required.',
+    'Register a new Clairvoyant user. Provide a public_key (ed25519) if the user needs API/CLI access. Users without keys are assignees only. If no admin exists, auto-approved. Otherwise pending admin approval.',
     {
-      name: z.string(),
-      type: z.enum(['human', 'agent']).optional().describe('Defaults to "agent"'),
-      public_key: z.string().optional().describe('Required for agent users'),
+      name: z.string().min(1).max(255),
+      public_key: z.string().max(1024).optional().describe('ed25519 public key — provide if user needs to authenticate'),
     },
-    withClientNoAuth(async (client, params) => {
+    withClientOptionalAuth(async (client, _actorId, params) => {
       return registerUser(client, params);
-    }),
+    }, { write: true }),
   );
 
   // ── get_user ─────────────────────────────────────────────────────
 
   server.tool(
     'get_user',
-    'Get a user by ID',
+    'Get a Clairvoyant user by ID',
     {
       user_id: z.string(),
     },
@@ -269,12 +301,10 @@ function createServer(): McpServer {
 
   server.tool(
     'list_users',
-    'List users, optionally filtered by type (human or agent)',
-    {
-      type: z.enum(['human', 'agent']).optional(),
-    },
-    withClient(async (client, actorId, params) => {
-      return listUsers(client, actorId, params);
+    'List all Clairvoyant users',
+    {},
+    withClient(async (client, actorId) => {
+      return listUsers(client, actorId);
     }),
   );
 
@@ -282,7 +312,7 @@ function createServer(): McpServer {
 
   server.tool(
     'authenticate',
-    'Authenticate: request a challenge nonce, or verify a signature to get a JWT. No authentication required.',
+    'Authenticate with Clairvoyant: request a challenge nonce, or verify an ed25519 signature to get a JWT. No authentication required.',
     {
       user_id: z.string(),
       action: z.enum(['request_challenge', 'verify']),
@@ -298,7 +328,7 @@ function createServer(): McpServer {
 
   server.tool(
     'register_webhook',
-    'Register a webhook URL to receive event notifications',
+    'Register a webhook URL to receive Clairvoyant event notifications (task changes, handoffs, etc.)',
     {
       url: z.string().url(),
       events: z.array(z.string()),
@@ -306,6 +336,56 @@ function createServer(): McpServer {
     withClient(async (client, actorId, params) => {
       return registerWebhook(client, actorId, params);
     }),
+  );
+
+  // ── approve_user (admin only) ─────────────────────────────────────
+
+  server.tool(
+    'approve_user',
+    'Approve a pending Clairvoyant user registration. Admin only. Also approves their pending key.',
+    {
+      user_id: z.string(),
+    },
+    withClient(async (client, actorId, params) => {
+      return approveUser(client, actorId, params);
+    }, { write: true }),
+  );
+
+  // ── set_admin (admin or bootstrap) ────────────────────────────────
+
+  server.tool(
+    'set_admin',
+    'Promote a Clairvoyant user to admin. If no admin exists yet, anyone can call this (bootstrap). After that, only admins can promote.',
+    {
+      user_id: z.string(),
+    },
+    withClientOptionalAuth(async (client, actorId, params) => {
+      return setAdminTool(client, actorId, params);
+    }, { write: true }),
+  );
+
+  // ── list_pending (admin only) ─────────────────────────────────────
+
+  server.tool(
+    'list_pending',
+    'List Clairvoyant users awaiting admin approval. Admin only.',
+    {},
+    withClient(async (client, actorId) => {
+      return listPending(client, actorId);
+    }),
+  );
+
+  // ── revoke_key (admin only) ───────────────────────────────────────
+
+  server.tool(
+    'revoke_key',
+    'Revoke a Clairvoyant user\'s key. Admin only. User must register a new key and get re-approved.',
+    {
+      user_id: z.string(),
+    },
+    withClient(async (client, actorId, params) => {
+      return revokeUserKey(client, actorId, params);
+    }, { write: true }),
   );
 
   return server;

@@ -16,14 +16,25 @@ export type TaskStatus = 'open' | 'done' | 'cancelled';
 
 // ── Core Entities ───────────────────────────────────────────────
 
-export type UserType = 'human' | 'agent';
+export type UserStatus = 'pending' | 'active';
+export type KeyStatus = 'pending' | 'approved' | 'revoked';
 
 export interface User {
   id: string;
   name: string;
-  type: UserType;
-  public_key: string | null;
+  status: UserStatus;
+  is_admin: boolean;
   created_at: Date;
+}
+
+export interface Key {
+  id: string;
+  user_id: string;
+  public_key: string;
+  status: KeyStatus;
+  approved_by: string | null;
+  created_at: Date;
+  approved_at: Date | null;
 }
 
 export interface Task {

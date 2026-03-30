@@ -1,9 +1,18 @@
 import pg from 'pg';
 import {
   getUserById,
-  getUserByPublicKey,
+  getKeyByPublicKey,
+  getActiveKeyForUser,
   insertUser,
+  insertKey,
+  approveKey,
+  revokeKey,
+  activateUser,
+  hasAnyAdmin,
+  acquireBootstrapLock,
+  setAdmin as setAdminQuery,
   listUsers as listUsersQuery,
+  listPendingUsers as listPendingUsersQuery,
 } from '../db/queries.js';
 import {
   generateNonce,
@@ -11,40 +20,58 @@ import {
   verifySignature,
   signToken,
 } from '../auth.js';
-import type { User, UserType } from '../types.js';
+import type { User } from '../types.js';
 
 // ── registerUser (unauthenticated) ────────────────────────────────
 
 export interface RegisterUserInput {
   name: string;
-  type?: UserType;
   public_key?: string;
 }
 
 export async function registerUser(
   client: pg.PoolClient,
   input: RegisterUserInput,
-): Promise<{ user: User }> {
-  const type = input.type ?? 'agent';
-
-  if (type === 'agent' && !input.public_key) {
-    throw new Error('Agents must provide a public_key for authentication');
-  }
-
+): Promise<{ user: User; key?: { id: string; status: string }; warning?: string }> {
+  // Check for duplicate key
   if (input.public_key) {
-    const existing = await getUserByPublicKey(client, input.public_key);
+    const existing = await getKeyByPublicKey(client, input.public_key);
     if (existing) {
       throw new Error('A user with this public key already exists');
     }
   }
 
+  // Serialize bootstrap check to prevent race conditions
+  await acquireBootstrapLock(client);
+
+  // Bootstrap logic: if no admin exists, auto-approve
+  const adminExists = await hasAnyAdmin(client);
+  const autoApprove = !adminExists;
+
   const user = await insertUser(client, {
     name: input.name,
-    type,
-    public_key: input.public_key,
+    status: autoApprove ? 'active' : 'pending',
   });
 
-  return { user };
+  let keyResult: { id: string; status: string } | undefined;
+
+  if (input.public_key) {
+    const key = await insertKey(client, {
+      user_id: user.id,
+      public_key: input.public_key,
+      status: autoApprove ? 'approved' : 'pending',
+    });
+    keyResult = { id: key.id, status: key.status };
+  }
+
+  const result: { user: User; key?: { id: string; status: string }; warning?: string } = { user };
+  if (keyResult) result.key = keyResult;
+
+  result.warning = autoApprove
+    ? 'No admin configured — registration is open. Run "cv admin set <user_id>" to lock down.'
+    : 'Registration pending admin approval.';
+
+  return result;
 }
 
 // ── getUser ───────────────────────────────────────────────────────
@@ -64,9 +91,8 @@ export async function getUser(
 export async function listUsers(
   client: pg.PoolClient,
   _actorId: string,
-  input: { type?: UserType },
 ): Promise<{ users: User[] }> {
-  const users = await listUsersQuery(client, input.type ? { type: input.type } : undefined);
+  const users = await listUsersQuery(client);
   return { users };
 }
 
@@ -106,11 +132,22 @@ export async function authenticate(
     throw new Error(`User not found: ${input.user_id}`);
   }
 
-  if (!user.public_key) {
-    throw new Error('This user has no public key registered');
+  // Check user is approved
+  if (user.status !== 'active') {
+    throw new Error('Your registration is pending admin approval');
   }
 
-  const sigValid = verifySignature(user.public_key, input.nonce, input.signature);
+  // Get the user's approved key
+  const key = await getActiveKeyForUser(client, user.id);
+  if (!key) {
+    throw new Error('No key registered for this user');
+  }
+
+  if (key.status !== 'approved') {
+    throw new Error('Your key is pending admin approval');
+  }
+
+  const sigValid = verifySignature(key.public_key, input.nonce, input.signature);
   if (!sigValid) {
     throw new Error('Invalid signature');
   }
@@ -122,4 +159,111 @@ export async function authenticate(
   const expires_at = new Date(payload.exp * 1000);
 
   return { token, expires_at, user };
+}
+
+// ── approveUser (admin only) ──────────────────────────────────────
+
+export async function approveUser(
+  client: pg.PoolClient,
+  actorId: string,
+  input: { user_id: string },
+): Promise<{ user: User; key?: { id: string; status: string } }> {
+  // Check caller is admin
+  const actor = await getUserById(client, actorId);
+  if (!actor?.is_admin) {
+    throw new Error('Only admins can approve users');
+  }
+
+  const user = await activateUser(client, input.user_id);
+
+  // Also approve their pending key if they have one
+  const key = await getActiveKeyForUser(client, input.user_id);
+  let keyResult: { id: string; status: string } | undefined;
+  if (key && key.status === 'pending') {
+    const approved = await approveKey(client, key.id, actorId);
+    keyResult = { id: approved.id, status: approved.status };
+  }
+
+  const result: { user: User; key?: { id: string; status: string } } = { user };
+  if (keyResult) result.key = keyResult;
+  return result;
+}
+
+// ── setAdmin (admin or bootstrap) ─────────────────────────────────
+
+export async function setAdminTool(
+  client: pg.PoolClient,
+  actorId: string | null,
+  input: { user_id: string },
+): Promise<{ user: User; warning?: string }> {
+  // Serialize bootstrap check to prevent concurrent unauthenticated promotions
+  await acquireBootstrapLock(client);
+  const adminExists = await hasAnyAdmin(client);
+
+  if (adminExists) {
+    // Must be called by an existing admin
+    if (!actorId) {
+      throw new Error('Authentication required');
+    }
+    const actor = await getUserById(client, actorId);
+    if (!actor?.is_admin) {
+      throw new Error('Only admins can promote other users to admin');
+    }
+  }
+
+  // Activate the user if pending (admins should be active)
+  await activateUser(client, input.user_id);
+
+  // Also approve their key if pending
+  const key = await getActiveKeyForUser(client, input.user_id);
+  if (key && key.status === 'pending' && actorId) {
+    await approveKey(client, key.id, actorId);
+  } else if (key && key.status === 'pending' && !actorId) {
+    // Bootstrap: self-approve
+    await approveKey(client, key.id, input.user_id);
+  }
+
+  const user = await setAdminQuery(client, input.user_id, true);
+
+  const result: { user: User; warning?: string } = { user };
+  if (!adminExists) {
+    result.warning = 'First admin set — registration is now locked down. New users will require approval.';
+  }
+  return result;
+}
+
+// ── listPending (admin only) ──────────────────────────────────────
+
+export async function listPending(
+  client: pg.PoolClient,
+  actorId: string,
+): Promise<{ users: User[] }> {
+  const actor = await getUserById(client, actorId);
+  if (!actor?.is_admin) {
+    throw new Error('Only admins can list pending users');
+  }
+
+  const users = await listPendingUsersQuery(client);
+  return { users };
+}
+
+// ── revokeUserKey (admin only) ────────────────────────────────────
+
+export async function revokeUserKey(
+  client: pg.PoolClient,
+  actorId: string,
+  input: { user_id: string },
+): Promise<{ revoked: boolean }> {
+  const actor = await getUserById(client, actorId);
+  if (!actor?.is_admin) {
+    throw new Error('Only admins can revoke keys');
+  }
+
+  const key = await getActiveKeyForUser(client, input.user_id);
+  if (!key) {
+    throw new Error('No active key found for this user');
+  }
+
+  await revokeKey(client, key.id);
+  return { revoked: true };
 }

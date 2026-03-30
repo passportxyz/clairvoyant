@@ -37,23 +37,37 @@ export async function withTransaction(
 }
 
 // Helper to create a test user directly via SQL (bypassing tool handlers)
+// Creates an active user with an approved key by default.
 export async function createTestUser(
   client: pg.PoolClient,
   overrides: {
     name?: string;
     public_key?: string;
+    status?: 'pending' | 'active';
+    is_admin?: boolean;
   } = {}
-): Promise<{ id: string; name: string; public_key: string; created_at: Date }> {
+): Promise<{ id: string; name: string; status: string; is_admin: boolean; created_at: Date }> {
   const name = overrides.name || 'test-user-' + Math.random().toString(36).slice(2, 8);
-  const public_key = overrides.public_key || 'ssh-ed25519 ' + Buffer.from(Math.random().toString()).toString('base64');
+  const status = overrides.status || 'active';
+  const is_admin = overrides.is_admin || false;
 
   const result = await client.query(
-    `INSERT INTO users (name, public_key)
-     VALUES ($1, $2)
+    `INSERT INTO users (name, status, is_admin)
+     VALUES ($1, $2, $3)
      RETURNING *`,
-    [name, public_key]
+    [name, status, is_admin]
   );
-  return result.rows[0];
+  const user = result.rows[0];
+
+  // If a public_key is provided, create an approved key for them
+  const public_key = overrides.public_key || 'ssh-ed25519 ' + Buffer.from(Math.random().toString()).toString('base64');
+  await client.query(
+    `INSERT INTO keys (user_id, public_key, status, approved_at)
+     VALUES ($1, $2, 'approved', now())`,
+    [user.id, public_key]
+  );
+
+  return user;
 }
 
 // Helper to create a test task directly via SQL

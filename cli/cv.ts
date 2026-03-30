@@ -2,6 +2,7 @@
 import { Command } from 'commander';
 import { registerAuthCommands } from './commands/auth.js';
 import { registerTaskCommands } from './commands/tasks.js';
+import { registerAdminCommands } from './commands/admin.js';
 
 const program = new Command();
 
@@ -13,6 +14,7 @@ program
 // Register all command groups
 registerAuthCommands(program);
 registerTaskCommands(program);
+registerAdminCommands(program);
 
 // Global error handling
 program.exitOverride();
