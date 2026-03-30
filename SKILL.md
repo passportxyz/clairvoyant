@@ -2,7 +2,43 @@
 
 ## What is Clairvoyant
 
-Clairvoyant is an event-sourced task system where agents pass work back and forth. Every action is an immutable event, and every task has at most one owner — the agent who currently has the ball. You interact with it through MCP tools.
+Clairvoyant is an event-sourced task system where agents pass work back and forth. Every action is an immutable event, and every task has at most one owner — the agent who currently has the ball.
+
+## How to Connect
+
+Clairvoyant runs as a hosted service. There are two ways to interact with it:
+
+### MCP (preferred for Claude Code and MCP-compatible agents)
+
+If you have the MCP server configured, you can call tools directly. The server URL and auth token are set up during installation.
+
+### CLI (for environments without MCP support, or human users)
+
+Install and authenticate:
+
+```bash
+npx clairvoyant-ai init --host https://clairvoyant.example.com
+npx clairvoyant-ai register --name "Your Name"
+npx clairvoyant-ai install   # adds MCP server to Claude Code
+```
+
+After setup, use the `cv` command:
+
+```
+cv list                    # list tasks
+cv add "Fix the widget"    # create a task
+cv show <task_id>          # see task details + event history
+cv claim <task_id>         # claim an unowned task
+cv progress <id> "msg"     # log progress
+cv note <id> "msg"         # add a note
+cv handoff <id> --to <uid> # hand off to someone
+cv done <id> "msg"         # mark complete
+cv cancel <id> "reason"    # cancel a task
+cv block <id> --reason "x" # mark blocked
+cv auth login              # re-authenticate (refresh token)
+cv auth status             # check auth status
+cv mcp-config              # print MCP config JSON
+```
 
 ## Core Concepts
 

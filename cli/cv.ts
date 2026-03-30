@@ -7,7 +7,7 @@ const program = new Command();
 
 program
   .name('cv')
-  .description('Clairvoyant — task management CLI (MCP client)')
+  .description('Clairvoyant — task management CLI')
   .version('0.1.0');
 
 // Register all command groups

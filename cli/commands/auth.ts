@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
+import { execSync } from 'node:child_process';
 import { Command } from 'commander';
 import {
   ensureCvDir,
@@ -9,6 +10,7 @@ import {
   loadPublicKey,
   loadPrivateKey,
   quickCall,
+  getServerUrl,
   KEY_PATH,
   PUBKEY_PATH,
   CV_DIR,
@@ -70,6 +72,20 @@ async function doLogin(userId: string, privateKeyPem: string): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
+// Helper: normalize host URL to MCP endpoint
+// ---------------------------------------------------------------------------
+
+function normalizeHost(host: string): string {
+  // Strip trailing slash
+  let url = host.replace(/\/+$/, '');
+  // If they didn't include /mcp, add it
+  if (!url.endsWith('/mcp')) {
+    url += '/mcp';
+  }
+  return url;
+}
+
+// ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
 
@@ -78,10 +94,20 @@ export function registerAuthCommands(program: Command): void {
 
   program
     .command('init')
-    .description('Generate ed25519 keypair at ~/.cv/')
-    .action(async () => {
+    .description('Initialize Clairvoyant: generate keypair and configure server host')
+    .requiredOption('--host <url>', 'Clairvoyant server URL (e.g. https://clairvoyant.example.com)')
+    .action(async (opts) => {
       await ensureCvDir();
 
+      // Save server URL
+      const serverUrl = normalizeHost(opts.host);
+      const config = await loadConfig();
+      config.server_url = serverUrl;
+      await saveConfig(config);
+
+      console.log(`Server: ${serverUrl}`);
+
+      // Generate keypair
       const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519', {
         publicKeyEncoding: { type: 'spki', format: 'pem' },
         privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
@@ -96,8 +122,7 @@ export function registerAuthCommands(program: Command): void {
       console.log(`  Private: ${KEY_PATH}`);
       console.log(`  Public:  ${PUBKEY_PATH}`);
       console.log();
-      console.log(`Public key:`);
-      console.log(`  ${sshPubKey}`);
+      console.log(`Next: cv register --name "Your Name"`);
     });
 
   // ── cv register ──────────────────────────────────────────────
@@ -128,6 +153,8 @@ export function registerAuthCommands(program: Command): void {
       await saveToken(token);
 
       console.log(`  Token: saved to ~/.cv/token`);
+      console.log();
+      console.log(`Next: cv install`);
     });
 
   // ── cv auth ──────────────────────────────────────────────────
@@ -167,6 +194,7 @@ export function registerAuthCommands(program: Command): void {
       const token = await loadToken();
 
       console.log(`Config directory: ${CV_DIR}`);
+      console.log(`Server: ${config.server_url ?? '(not configured)'}`);
       console.log(`User ID: ${config.user_id ?? '(not set)'}`);
       console.log(`Token: ${token ? 'present' : '(none)'}`);
 
@@ -190,6 +218,49 @@ export function registerAuthCommands(program: Command): void {
       }
     });
 
+  // ── cv install ───────────────────────────────────────────────
+
+  program
+    .command('install')
+    .description('Install Clairvoyant MCP server into Claude Code')
+    .action(async () => {
+      const config = await loadConfig();
+      const token = await loadToken();
+      const serverUrl = await getServerUrl();
+
+      if (!token) {
+        console.error('Error: No token found. Run "cv register" or "cv auth login" first.');
+        process.exit(1);
+      }
+
+      // Use claude mcp add with the remote HTTP endpoint
+      try {
+        execSync(
+          `claude mcp add clairvoyant --transport http "${serverUrl}" -- --header "Authorization: Bearer ${token}"`,
+          { stdio: 'inherit' },
+        );
+        console.log();
+        console.log(`MCP server installed in Claude Code.`);
+        console.log(`  Server: ${serverUrl}`);
+        console.log(`  User:   ${config.user_id ?? '(unknown)'}`);
+      } catch {
+        // claude CLI may not be available — fall back to printing config
+        console.log(`Could not run "claude mcp add". Add this to your MCP config manually:`);
+        console.log();
+        const mcpConfig = {
+          mcpServers: {
+            clairvoyant: {
+              url: serverUrl,
+              headers: {
+                Authorization: `Bearer ${token}`,
+              },
+            },
+          },
+        };
+        console.log(JSON.stringify(mcpConfig, null, 2));
+      }
+    });
+
   // ── cv mcp-config ────────────────────────────────────────────
 
   program
@@ -197,7 +268,6 @@ export function registerAuthCommands(program: Command): void {
     .description('Print MCP config JSON snippet for use in agent config files')
     .action(async () => {
       const token = await loadToken();
-      const { getServerUrl } = await import('../config.js');
       const serverUrl = await getServerUrl();
 
       const config = {

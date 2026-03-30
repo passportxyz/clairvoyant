@@ -21,8 +21,6 @@ export { CV_DIR, CONFIG_PATH, TOKEN_PATH, KEY_PATH, PUBKEY_PATH };
 // Config
 // ---------------------------------------------------------------------------
 
-const DEFAULT_SERVER_URL = 'http://localhost:3000/mcp';
-
 export interface CvConfig {
   user_id?: string;
   server_url?: string;
@@ -51,7 +49,10 @@ export async function saveConfig(config: CvConfig): Promise<void> {
 export async function getServerUrl(): Promise<string> {
   if (process.env.CV_SERVER_URL) return process.env.CV_SERVER_URL;
   const config = await loadConfig();
-  return config.server_url ?? DEFAULT_SERVER_URL;
+  if (!config.server_url) {
+    throw new Error('No server URL configured. Run "cv init --host <url>" or set CV_SERVER_URL.');
+  }
+  return config.server_url;
 }
 
 // ---------------------------------------------------------------------------

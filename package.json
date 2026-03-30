@@ -1,10 +1,13 @@
 {
-  "name": "@clairvoyant/core",
+  "name": "clairvoyant-ai",
   "version": "0.1.0",
   "type": "module",
   "description": "Event-sourced task management system with MCP interface",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
+  "bin": {
+    "cv": "dist/cli/cv.js"
+  },
   "scripts": {
     "build": "tsc",
     "dev": "tsx watch src/index.ts",
