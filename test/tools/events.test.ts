@@ -9,8 +9,8 @@ import {
   createTestUser,
   createTestTask,
 } from '../setup.js';
-import { appendEvent, claimTask } from '../../src/tools/events.js';
-import type { AppendEventResult, ClaimErrorResult } from '../../src/tools/events.js';
+import { updateTask, claimTask } from '../../src/tools/events.js';
+import type { UpdateTaskResult, ClaimErrorResult } from '../../src/tools/events.js';
 import { insertEvent } from '../../src/db/queries.js';
 
 // ── Helpers ────────────────────────────────────────────────────
@@ -30,7 +30,7 @@ async function seedCreatedEvent(
   });
 }
 
-function isSuccess(result: AppendEventResult | ClaimErrorResult): result is AppendEventResult {
+function isSuccess(result: UpdateTaskResult | ClaimErrorResult): result is UpdateTaskResult {
   return !('error' in result);
 }
 
@@ -46,14 +46,14 @@ afterAll(async () => {
 
 // ── Tests ──────────────────────────────────────────────────────
 
-describe('appendEvent', () => {
+describe('updateTask', () => {
   it("'note' updates timestamp", async () => {
     await withTransaction(async (client) => {
       const user = await createTestUser(client);
       const task = await createTestTask(client, user.id);
       await seedCreatedEvent(client, task.id, user.id);
 
-      const result = await appendEvent(client, user.id, {
+      const result = await updateTask(client, user.id, {
         task_id: task.id,
         event_type: 'note',
         body: 'A note',
@@ -73,7 +73,7 @@ describe('appendEvent', () => {
       const task = await createTestTask(client, user.id);
       await seedCreatedEvent(client, task.id, user.id);
 
-      const result = await appendEvent(client, user.id, {
+      const result = await updateTask(client, user.id, {
         task_id: task.id,
         event_type: 'progress',
         body: 'Made progress',
@@ -94,7 +94,7 @@ describe('appendEvent', () => {
       const task = await createTestTask(client, user1.id, { owner_id: user1.id });
       await seedCreatedEvent(client, task.id, user1.id);
 
-      const result = await appendEvent(client, user1.id, {
+      const result = await updateTask(client, user1.id, {
         task_id: task.id,
         event_type: 'handoff',
         metadata: { to_user_id: user2.id },
@@ -113,7 +113,7 @@ describe('appendEvent', () => {
       const task = await createTestTask(client, user.id);
       await seedCreatedEvent(client, task.id, user.id);
 
-      const result = await appendEvent(client, user.id, {
+      const result = await updateTask(client, user.id, {
         task_id: task.id,
         event_type: 'completed',
         idempotency_key: randomUUID(),
@@ -136,7 +136,7 @@ describe('appendEvent', () => {
       const task = await createTestTask(client, user.id);
       await seedCreatedEvent(client, task.id, user.id);
 
-      const result = await appendEvent(client, user.id, {
+      const result = await updateTask(client, user.id, {
         task_id: task.id,
         event_type: 'cancelled',
         idempotency_key: randomUUID(),
@@ -156,7 +156,7 @@ describe('appendEvent', () => {
 
       // 'progress' should be rejected on a done task
       await expect(
-        appendEvent(client, user.id, {
+        updateTask(client, user.id, {
           task_id: task.id,
           event_type: 'progress',
           idempotency_key: randomUUID(),
@@ -164,7 +164,7 @@ describe('appendEvent', () => {
       ).rejects.toThrow(/terminal state/);
 
       // 'note' should still work
-      const noteResult = await appendEvent(client, user.id, {
+      const noteResult = await updateTask(client, user.id, {
         task_id: task.id,
         event_type: 'note',
         body: 'Post-mortem note',
@@ -181,7 +181,7 @@ describe('appendEvent', () => {
       const task = await createTestTask(client, owner.id, { owner_id: owner.id });
       await seedCreatedEvent(client, task.id, owner.id);
 
-      const result = await appendEvent(client, claimer.id, {
+      const result = await updateTask(client, claimer.id, {
         task_id: task.id,
         event_type: 'claimed',
         metadata: { user_id: claimer.id },
@@ -201,7 +201,7 @@ describe('appendEvent', () => {
       const task = await createTestTask(client, user.id, { priority: 3 });
       await seedCreatedEvent(client, task.id, user.id);
 
-      const result = await appendEvent(client, user.id, {
+      const result = await updateTask(client, user.id, {
         task_id: task.id,
         event_type: 'field_changed',
         metadata: { field: 'priority', old_value: 3, new_value: 5 },
@@ -221,7 +221,7 @@ describe('appendEvent', () => {
       await seedCreatedEvent(client, task.id, user.id);
 
       await expect(
-        appendEvent(client, user.id, {
+        updateTask(client, user.id, {
           task_id: task.id,
           event_type: 'field_changed',
           metadata: { field: 'priority', old_value: 999, new_value: 5 },
@@ -238,14 +238,14 @@ describe('appendEvent', () => {
       await seedCreatedEvent(client, task.id, user.id);
 
       const key = randomUUID();
-      const result1 = await appendEvent(client, user.id, {
+      const result1 = await updateTask(client, user.id, {
         task_id: task.id,
         event_type: 'note',
         body: 'Idempotent note',
         idempotency_key: key,
       });
 
-      const result2 = await appendEvent(client, user.id, {
+      const result2 = await updateTask(client, user.id, {
         task_id: task.id,
         event_type: 'note',
         body: 'Idempotent note',
@@ -270,9 +270,9 @@ describe('appendEvent', () => {
       // Simulate a concurrent version bump by directly updating the version
       await client.query('UPDATE tasks SET version = version + 1 WHERE id = $1', [task.id]);
 
-      // Now appendEvent should fail because the task version has changed
+      // Now updateTask should fail because the task version has changed
       await expect(
-        appendEvent(client, user.id, {
+        updateTask(client, user.id, {
           task_id: task.id,
           event_type: 'completed',
           idempotency_key: randomUUID(),

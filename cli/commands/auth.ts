@@ -2,21 +2,21 @@ import crypto from 'node:crypto';
 import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { Command } from 'commander';
 import {
-  ensureCvDir,
+  ensureQlDir,
   loadConfig,
   saveConfig,
   loadToken,
   loadPublicKey,
   loadPrivateKey,
-  quickCall,
+  authCall,
   getServerUrl,
   KEY_PATH,
   PUBKEY_PATH,
-  CV_DIR,
+  QL_DIR,
 } from '../config.js';
 
 // ---------------------------------------------------------------------------
@@ -55,21 +55,19 @@ function publicKeyToSSH(publicKeyPem: string): string {
 
 async function doLogin(userId: string, privateKeyPem: string): Promise<string> {
   // Step 1: Request challenge
-  const challenge = await quickCall('authenticate', {
+  const challenge = await authCall('POST', '/challenge', {
     user_id: userId,
-    action: 'request_challenge',
-  }, { noAuth: true }) as { nonce: string; expires_at: string };
+  }) as { nonce: string; expires_at: string };
 
   // Step 2: Sign the nonce
   const signature = signNonce(privateKeyPem, challenge.nonce);
 
   // Step 3: Verify signature and get token
-  const verified = await quickCall('authenticate', {
+  const verified = await authCall('POST', '/verify', {
     user_id: userId,
-    action: 'verify',
     nonce: challenge.nonce,
     signature,
-  }, { noAuth: true }) as { token: string };
+  }) as { token: string };
 
   return verified.token;
 }
@@ -93,14 +91,14 @@ function normalizeHost(host: string): string {
 // ---------------------------------------------------------------------------
 
 export function registerAuthCommands(program: Command): void {
-  // ── cv init ──────────────────────────────────────────────────
+  // ── ql init ──────────────────────────────────────────────────
 
   program
     .command('init')
-    .description('Initialize Clairvoyant: generate keypair and configure server host')
-    .requiredOption('--host <url>', 'Clairvoyant server URL (e.g. https://clairvoyant.example.com)')
+    .description('Initialize Quest Log: generate keypair and configure server host')
+    .requiredOption('--host <url>', 'Quest Log server URL (e.g. https://quest-log.example.com)')
     .action(async (opts) => {
-      await ensureCvDir();
+      await ensureQlDir();
 
       // Save server URL
       const serverUrl = normalizeHost(opts.host);
@@ -125,10 +123,10 @@ export function registerAuthCommands(program: Command): void {
       console.log(`  Private: ${KEY_PATH}`);
       console.log(`  Public:  ${PUBKEY_PATH}`);
       console.log();
-      console.log(`Next: cv register --name "Your Name"`);
+      console.log(`Next: ql register --name "Your Name"`);
     });
 
-  // ── cv register ──────────────────────────────────────────────
+  // ── ql register ──────────────────────────────────────────────
 
   program
     .command('register')
@@ -136,7 +134,7 @@ export function registerAuthCommands(program: Command): void {
     .requiredOption('--name <name>', 'Display name')
     .option('--user-id <id>', 'Existing user ID (re-register new key after revocation)')
     .action(async (opts) => {
-      // CLI users always have keys (from cv init)
+      // CLI users always have keys (from ql init)
       const publicKey = await loadPublicKey();
       const privateKeyPem = await loadPrivateKey();
 
@@ -148,7 +146,7 @@ export function registerAuthCommands(program: Command): void {
         params.user_id = opts.userId;
       }
 
-      const result = await quickCall('register_user', params, { noAuth: true }) as {
+      const result = await authCall('POST', '/register', params) as {
         user: { id: string; status: string };
         key?: { id: string; status: string };
         warning?: string;
@@ -175,22 +173,22 @@ export function registerAuthCommands(program: Command): void {
         const token = await doLogin(result.user.id, privateKeyPem);
         await saveToken(token);
 
-        console.log(`  Token: saved to ~/.cv/token`);
+        console.log(`  Token: saved to ~/.ql/token`);
         console.log();
-        console.log(`Next: cv install`);
+        console.log(`Next: ql install`);
       } else {
         console.log();
-        console.log(`Next: Ask an admin to approve you: cv admin approve ${result.user.id}`);
+        console.log(`Next: Ask an admin to approve you: ql admin approve ${result.user.id}`);
       }
     });
 
-  // ── cv auth ──────────────────────────────────────────────────
+  // ── ql auth ──────────────────────────────────────────────────
 
   const auth = program
     .command('auth')
     .description('Authentication commands');
 
-  // ── cv auth login ────────────────────────────────────────────
+  // ── ql auth login ────────────────────────────────────────────
 
   auth
     .command('login')
@@ -198,7 +196,7 @@ export function registerAuthCommands(program: Command): void {
     .action(async () => {
       const config = await loadConfig();
       if (!config.user_id) {
-        console.error('Error: No user_id in config. Run "cv register" first.');
+        console.error('Error: No user_id in config. Run "ql register" first.');
         process.exit(1);
       }
 
@@ -208,10 +206,10 @@ export function registerAuthCommands(program: Command): void {
       await saveToken(token);
 
       console.log(`Authenticated successfully.`);
-      console.log(`Token saved to ~/.cv/token`);
+      console.log(`Token saved to ~/.ql/token`);
     });
 
-  // ── cv auth status ───────────────────────────────────────────
+  // ── ql auth status ───────────────────────────────────────────
 
   auth
     .command('status')
@@ -220,7 +218,7 @@ export function registerAuthCommands(program: Command): void {
       const config = await loadConfig();
       const token = await loadToken();
 
-      console.log(`Config directory: ${CV_DIR}`);
+      console.log(`Config directory: ${QL_DIR}`);
       console.log(`Server: ${config.server_url ?? '(not configured)'}`);
       console.log(`User ID: ${config.user_id ?? '(not set)'}`);
       console.log(`Token: ${token ? 'present' : '(none)'}`);
@@ -245,27 +243,28 @@ export function registerAuthCommands(program: Command): void {
       }
     });
 
-  // ── cv install ───────────────────────────────────────────────
+  // ── ql install ───────────────────────────────────────────────
 
   program
     .command('install')
-    .description('Install Clairvoyant MCP server into Claude Code')
+    .description('Install Quest Log MCP server into Claude Code')
     .action(async () => {
       const config = await loadConfig();
       const token = await loadToken();
       const serverUrl = await getServerUrl();
 
       if (!token) {
-        console.error('Error: No token found. Run "cv register" or "cv auth login" first.');
+        console.error('Error: No token found. Run "ql register" or "ql auth login" first.');
         process.exit(1);
       }
 
       // Use claude mcp add with the remote HTTP endpoint
       try {
-        execSync(
-          `claude mcp add clairvoyant --transport http "${serverUrl}" -- --header "Authorization: Bearer ${token}"`,
-          { stdio: 'inherit' },
-        );
+        execFileSync('claude', [
+          'mcp', 'add', 'quest-log',
+          '--transport', 'http', serverUrl,
+          '--', '--header', `Authorization: Bearer ${token}`,
+        ], { stdio: 'inherit' });
         console.log();
         console.log(`MCP server installed in Claude Code.`);
         console.log(`  Server: ${serverUrl}`);
@@ -276,7 +275,7 @@ export function registerAuthCommands(program: Command): void {
         console.log();
         const mcpConfig = {
           mcpServers: {
-            clairvoyant: {
+            'quest-log': {
               url: serverUrl,
               headers: {
                 Authorization: `Bearer ${token}`,
@@ -292,7 +291,7 @@ export function registerAuthCommands(program: Command): void {
         const __dirname = dirname(fileURLToPath(import.meta.url));
         // Compiled: dist/cli/commands/auth.js → package root is 3 levels up
         const skillSrc = join(__dirname, '..', '..', '..', 'SKILL.md');
-        const skillDest = join(homedir(), '.claude', 'skills', 'clairvoyant.md');
+        const skillDest = join(homedir(), '.claude', 'skills', 'quest-log.md');
         await mkdir(dirname(skillDest), { recursive: true });
         await copyFile(skillSrc, skillDest);
         console.log(`Skill installed: ${skillDest}`);
@@ -301,7 +300,7 @@ export function registerAuthCommands(program: Command): void {
       }
     });
 
-  // ── cv mcp-config ────────────────────────────────────────────
+  // ── ql mcp-config ────────────────────────────────────────────
 
   program
     .command('mcp-config')
@@ -312,7 +311,7 @@ export function registerAuthCommands(program: Command): void {
 
       const config = {
         mcpServers: {
-          clairvoyant: {
+          'quest-log': {
             url: serverUrl,
             headers: {
               Authorization: `Bearer ${token ?? '<your-token-here>'}`,

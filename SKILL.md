@@ -1,28 +1,28 @@
-# Clairvoyant — Agent Guide
+# Quest Log — Agent Guide
 
-## What is Clairvoyant
+## What is Quest Log
 
-Clairvoyant is an event-sourced task system where agents pass work back and forth. Every action is an immutable event, and every task has at most one owner — the agent who currently has the ball.
+Quest Log is an event-sourced task system where agents pass work back and forth. Every action is an immutable event, and every task has at most one owner — the agent who currently has the ball.
 
 ## How to Connect
 
-Clairvoyant runs as a hosted service. There are two ways to interact with it:
+Quest Log runs as a hosted service. There are two ways to interact with it:
 
 ### Bootstrap — Ensuring the CLI is Available
 
-The `cv` CLI is provided by the `clairvoyant-ai` npm package. Before using any CLI commands, check if it's installed:
+The `ql` CLI is provided by the `quest-log` npm package. Before using any CLI commands, check if it's installed:
 
 ```bash
-# Check if cv is available
-which cv || cv --version
+# Check if ql is available
+which ql || ql --version
 
 # If not installed, install it globally
-npm install -g clairvoyant-ai
+npm install -g quest-log
 ```
 
-If `cv` is already configured (check `~/.config/clairvoyant/config.json` for host and token), you're ready to go. If not, run the init flow below.
+If `ql` is already configured (check `~/.ql/config` for host and token), you're ready to go. If not, run the init flow below.
 
-**Note:** In containerized environments, `cv` may be lost on rebuild. The npm package is the source of truth — just `npm install -g clairvoyant-ai` again. Your config in `~/.config/clairvoyant/` persists separately.
+**Note:** In containerized environments, `ql` may be lost on rebuild. The npm package is the source of truth — just `npm install -g quest-log` again. Your config in `~/.ql/` persists separately.
 
 ### MCP (preferred for Claude Code and MCP-compatible agents)
 
@@ -33,27 +33,28 @@ If you have the MCP server configured, you can call tools directly. The server U
 Install and authenticate:
 
 ```bash
-npx clairvoyant-ai init --host https://clairvoyant.example.com
-npx clairvoyant-ai register --name "Your Name"
-npx clairvoyant-ai install   # adds MCP server to Claude Code
+npx quest-log init --host https://quest-log.example.com
+npx quest-log register --name "Your Name"
+npx quest-log install   # adds MCP server to Claude Code
 ```
 
-After setup, use the `cv` command:
+After setup, use the `ql` command:
 
 ```
-cv list                    # list tasks
-cv add "Fix the widget"    # create a task
-cv show <task_id>          # see task details + event history
-cv claim <task_id>         # claim an unowned task
-cv progress <id> "msg"     # log progress
-cv note <id> "msg"         # add a note
-cv handoff <id> --to <uid> # hand off to someone
-cv done <id> "msg"         # mark complete
-cv cancel <id> "reason"    # cancel a task
-cv block <id> --reason "x" # mark blocked
-cv auth login              # re-authenticate (refresh token)
-cv auth status             # check auth status
-cv mcp-config              # print MCP config JSON
+ql list                           # list tasks
+ql add "Fix the widget"           # create a task
+ql show <task_id>                 # see task details + event history
+ql claim <task_id>                # claim an unowned task
+ql update <id> progress "msg"     # log progress
+ql update <id> note "msg"         # add a note
+ql update <id> handoff <uid> "msg"  # hand off to someone
+ql update <id> done "msg"         # mark complete
+ql update <id> cancel "reason"    # cancel a task
+ql update <id> block --blocked-by <id> "reason"  # mark blocked
+ql update <id> set priority 1     # change a field
+ql auth login                     # re-authenticate (refresh token)
+ql auth status                    # check auth status
+ql mcp-config                     # print MCP config JSON
 ```
 
 ## Core Concepts
@@ -110,9 +111,9 @@ Get a single task with its full event history.
 
 Use when: you need the full context of a task — all events, who did what, current state.
 
-### append_event
+### update_task
 
-Append an event to a task. This is the primary write operation.
+Update a task by appending an event. This is the primary write operation.
 
 | Param | Required | Description |
 |---|---|---|
@@ -134,43 +135,6 @@ Atomic claim with optimistic locking. Fails if already owned.
 | `idempotency_key` | yes | UUID for safe retries |
 
 Use when: picking up an unowned task from the triage pool. Returns `already_claimed` with the current `owner_id` if someone beat you to it.
-
-### register_user
-
-Register a new user. Unauthenticated.
-
-| Param | Required | Description |
-|---|---|---|
-| `name` | yes | Display name |
-| `public_key` | yes | SSH ed25519 public key |
-
-### get_user
-
-Get a user by ID.
-
-| Param | Required | Description |
-|---|---|---|
-| `user_id` | yes | The user UUID |
-
-### authenticate
-
-Exchange an SSH signature for a JWT token. Two-step flow:
-
-1. `{ user_id, action: "request_challenge" }` — get a nonce
-2. `{ user_id, action: "verify", nonce, signature }` — get a token
-
-Use when: initial setup or token refresh. The CLI handles this automatically.
-
-### register_webhook
-
-Register a webhook URL to receive event notifications.
-
-| Param | Required | Description |
-|---|---|---|
-| `url` | yes | Webhook URL (must be valid URL) |
-| `events` | yes | Array of event types to subscribe to |
-
-Returns the webhook record and the HMAC secret for verifying payloads.
 
 ## Event Types — When to Use Each
 
@@ -240,4 +204,4 @@ This is not failure. It's a signal for the system to route the task to someone w
 
 ## Idempotency
 
-Every write operation (`create_task`, `append_event`, `claim_task`) requires an `idempotency_key` — a UUID you generate. If your request fails and you retry with the same key, the system returns the original result instead of creating a duplicate. Generate the key once, keep it, retry with it.
+Every write operation (`create_task`, `update_task`, `claim_task`) requires an `idempotency_key` — a UUID you generate. If your request fails and you retry with the same key, the system returns the original result instead of creating a duplicate. Generate the key once, keep it, retry with it.

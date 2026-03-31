@@ -8,7 +8,7 @@ let pool: pg.Pool | null = null;
 export function getTestPool(): pg.Pool {
   if (!pool) {
     const connectionString = process.env.TEST_DATABASE_URL ||
-      'postgresql://clairvoyant:clairvoyant@localhost:5432/clairvoyant_test';
+      'postgresql://quest_log:quest_log@localhost:5432/quest_log_test';
     pool = new Pool({ connectionString });
   }
   return pool;

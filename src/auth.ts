@@ -8,15 +8,15 @@ import { AuthError, type JwtPayload } from './types.js';
 const nonceStore: Map<string, { expiresAt: Date; userId: string }> = new Map();
 
 function getSecret(): string {
-  const secret = process.env.CV_JWT_SECRET;
+  const secret = process.env.QL_JWT_SECRET;
   if (!secret) {
-    throw new Error('CV_JWT_SECRET environment variable is required');
+    throw new Error('QL_JWT_SECRET environment variable is required');
   }
   return secret;
 }
 
 function getExpiryDays(): number {
-  const raw = process.env.CV_TOKEN_EXPIRY_DAYS;
+  const raw = process.env.QL_TOKEN_EXPIRY_DAYS;
   return raw ? parseInt(raw, 10) : 90;
 }
 

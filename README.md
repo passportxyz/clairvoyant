@@ -1,4 +1,4 @@
-# The Clairvoyant
+# Quest Log
 
 ```
 me:       What did you get done last night?
@@ -21,39 +21,39 @@ claude:   Created the newsletter automation task and assigned it to you.
           meeting Thursday at 2pm. Created a task to prep the agenda.
 ```
 
-The Clairvoyant is a task management system where humans and AI agents pass work back and forth. Every task has a ball, and it's always in someone's court.
+Quest Log is a task management system where humans and AI agents pass work back and forth. Every task has a ball, and it's always in someone's court.
 
 ## Add to your agent
 
-If Clairvoyant is already set up in your org, this is all you need.
+If Quest Log is already set up in your org, this is all you need.
 
 ### 1. Install the CLI and connect
 
 ```sh
-npm install -g clairvoyant-ai
+npm install -g quest-log
 
-cv init --host https://clairvoyant.your-org.com
+ql init --host https://quest-log.your-org.com
 ```
 
-This generates an ed25519 keypair at `~/.cv/` and saves the server URL.
+This generates an ed25519 keypair at `~/.ql/` and saves the server URL.
 
 ### 2. Install the MCP server
 
 ```sh
-cv install
+ql install
 ```
 
-This adds Clairvoyant as a remote MCP server in Claude Code (user scope). Your agent now has access to all Clairvoyant tools.
+This adds Quest Log as a remote MCP server in Claude Code (user scope). Your agent now has access to all Quest Log tools.
 
 ### 3. Register your agent
 
 Open Claude Code and tell your agent:
 
 ```
-"Register yourself with Clairvoyant"
+"Register yourself with Quest Log"
 ```
 
-Your agent will call `register_user` with its keypair, then `authenticate` to get a JWT. If an admin has already been set up, your registration will be pending until approved.
+Your agent will call `register_user` via the REST API with its keypair, then authenticate to get a JWT. If an admin has already been set up, your registration will be pending until approved.
 
 ### 4. Use it
 
@@ -72,11 +72,11 @@ One person sets up the server and becomes the first admin. After that, registrat
 
 ### 1. Deploy the server
 
-Clairvoyant needs a PostgreSQL database and two environment variables:
+Quest Log needs a PostgreSQL database and two environment variables:
 
 ```sh
-DATABASE_URL=postgresql://user:pass@host:5432/clairvoyant
-CV_JWT_SECRET=your-random-secret-here
+DATABASE_URL=postgresql://user:pass@host:5432/quest_log
+QL_JWT_SECRET=your-random-secret-here
 ```
 
 Migrations run automatically on startup.
@@ -85,19 +85,19 @@ Migrations run automatically on startup.
 
 ```sh
 # Install CLI and connect
-npm install -g clairvoyant-ai
-cv init --host https://clairvoyant.your-org.com
+npm install -g quest-log
+ql init --host https://quest-log.your-org.com
 
-# Register yourself (cv init generated your keypair)
-cv register --name "Your Name"
+# Register yourself (ql init generated your keypair)
+ql register --name "Your Name"
 
 # Make yourself the first admin — this locks down registration
-cv admin set <your-user-id>
+ql admin set <your-user-id>
 ```
 
-Users registered via the CLI get a keypair and can authenticate. Users registered via MCP without a key are assignees only — they can be referenced in tasks but can't call the API directly.
+Users registered via the CLI get a keypair and can authenticate. Users registered via the REST API without a key are assignees only — they can be referenced in tasks but can't call the API directly.
 
-Until you run `cv admin set`, registration is open and everyone is auto-approved. Once the first admin exists, all new registrations are pending.
+Until you run `ql admin set`, registration is open and everyone is auto-approved. Once the first admin exists, all new registrations are pending.
 
 ### 3. Approve new users
 
@@ -105,41 +105,34 @@ When agents or other humans register, they go into a pending queue:
 
 ```sh
 # See who's waiting
-cv admin list-pending
+ql admin list-pending
 
 # Approve a user (also approves their key)
-cv admin approve <user_id>
+ql admin approve <user_id>
 
 # List all users
-cv users
+ql users
 
 # Promote another user to admin
-cv admin set <user_id>
+ql admin set <user_id>
 
 # Revoke a user's key (forces re-registration)
-cv admin revoke-key <user_id>
+ql admin revoke-key <user_id>
 ```
 
 ## MCP tools
 
-Clairvoyant exposes 14 tools over MCP. These manage **persistent, cross-session work items** — use them for work that needs tracking, handoffs, or an audit trail. They are not for ephemeral to-dos or in-conversation scratch notes.
+Quest Log exposes 5 tools over MCP. These manage **persistent, cross-session work items** — use them for work that needs tracking, handoffs, or an audit trail. They are not for ephemeral to-dos or in-conversation scratch notes.
 
 | Tool | Auth | Description |
 |------|------|-------------|
 | `create_task` | Yes | Create a tracked work item with title, body, priority, due date, tags |
 | `list_tasks` | Yes | List/filter by status (open/done/cancelled), owner, tags, parent, creator |
 | `get_task` | Yes | Get a task with its full event history |
-| `append_event` | Yes | Add events: note, progress, handoff, completed, cancelled, blocked, etc. |
+| `update_task` | Yes | Add events: note, progress, handoff, completed, cancelled, blocked, etc. |
 | `claim_task` | Yes | Claim an unowned task — sets you as the owner |
-| `register_user` | No | Register a user. Provide a key for API access, or omit for assignee-only. |
-| `get_user` | Yes | Look up a user by ID |
-| `list_users` | Yes | List all users |
-| `authenticate` | No | Challenge-response auth flow → JWT |
-| `register_webhook` | Yes | Subscribe a URL to event notifications |
-| `approve_user` | Admin | Approve a pending user and their key |
-| `set_admin` | Admin* | Promote a user to admin (*bootstrap: no auth needed if no admin exists) |
-| `list_pending` | Admin | List users awaiting approval |
-| `revoke_key` | Admin | Revoke a user's key (forces re-registration) |
+
+Auth (registration, authentication) and admin operations are handled via REST endpoints, not MCP.
 
 ## How it works
 
@@ -153,10 +146,11 @@ Clairvoyant exposes 14 tools over MCP. These manage **persistent, cross-session 
 
 ## Interfaces
 
-Humans talk to their agents. Agents talk to Clairvoyant. AI is the UI.
+Humans talk to their agents. Agents talk to Quest Log. AI is the UI.
 
-- **MCP server** — the sole interface to Clairvoyant
-- **CLI (`cv`) + SKILL.md** — MCP client for agents that don't natively support MCP
+- **MCP server** — 5 core task tools
+- **REST API** — auth and admin endpoints
+- **CLI (`ql`) + SKILL.md** — MCP client for agents that don't natively support MCP
 
 ## More
 

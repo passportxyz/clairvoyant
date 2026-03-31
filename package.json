@@ -1,12 +1,12 @@
 {
-  "name": "clairvoyant-ai",
+  "name": "quest-log",
   "version": "0.2.1",
   "type": "module",
-  "description": "Event-sourced task management system with MCP interface",
+  "description": "Quest Log — event-sourced task management system with MCP interface",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
   "bin": {
-    "cv": "dist/cli/cv.js"
+    "ql": "dist/cli/ql.js"
   },
   "scripts": {
     "build": "tsc",
@@ -36,7 +36,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/passportxyz/clairvoyant"
+    "url": "https://github.com/passportxyz/questlog"
   },
   "engines": {
     "node": ">=20.0.0"

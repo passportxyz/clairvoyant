@@ -57,7 +57,7 @@ function formatTaskDetail(t: Record<string, unknown>): string {
 // ---------------------------------------------------------------------------
 
 export function registerTaskCommands(program: Command): void {
-  // ── cv add ───────────────────────────────────────────────────
+  // ── ql add ───────────────────────────────────────────────────
 
   program
     .command('add <title>')
@@ -92,7 +92,7 @@ export function registerTaskCommands(program: Command): void {
       }
     });
 
-  // ── cv list ──────────────────────────────────────────────────
+  // ── ql list ──────────────────────────────────────────────────
 
   program
     .command('list')
@@ -116,7 +116,7 @@ export function registerTaskCommands(program: Command): void {
         if (config.user_id) {
           args.owner_id = config.user_id;
         } else {
-          console.error('Warning: --mine requires user_id in config. Run "cv register" first.');
+          console.error('Warning: --mine requires user_id in config. Run "ql register" first.');
         }
       }
 
@@ -143,7 +143,7 @@ export function registerTaskCommands(program: Command): void {
       }
     });
 
-  // ── cv show ──────────────────────────────────────────────────
+  // ── ql show ──────────────────────────────────────────────────
 
   program
     .command('show <task_id>')
@@ -158,7 +158,7 @@ export function registerTaskCommands(program: Command): void {
       }
     });
 
-  // ── cv claim ─────────────────────────────────────────────────
+  // ── ql claim ─────────────────────────────────────────────────
 
   program
     .command('claim <task_id>')
@@ -166,25 +166,36 @@ export function registerTaskCommands(program: Command): void {
     .action(async (taskId) => {
       const client = await createMcpClient();
       try {
-        await callTool(client, 'claim_task', {
+        const result = await callTool(client, 'claim_task', {
           task_id: taskId,
           idempotency_key: idemKey(),
-        });
+        }) as Record<string, unknown>;
+        if (result.error === 'already_claimed') {
+          console.error(`Task ${taskId} is already claimed by ${result.owner_id}`);
+          process.exit(1);
+        }
         console.log(`Claimed task: ${taskId}`);
       } finally {
         await client.close();
       }
     });
 
-  // ── cv progress ──────────────────────────────────────────────
+  // ── ql update <task_id> <subcommand> ─────────────────────────
 
-  program
-    .command('progress <task_id> <message>')
+  const update = program
+    .command('update <task_id>')
+    .description('Update a task (use a subcommand: note, progress, done, cancel, block, handoff, set)');
+
+  // ── ql update <id> progress <message> ────────────────────────
+
+  update
+    .command('progress <message>')
     .description('Log progress on a task')
-    .action(async (taskId, message) => {
+    .action(async (message, _opts, cmd) => {
+      const taskId = cmd.parent!.args[0];
       const client = await createMcpClient();
       try {
-        await callTool(client, 'append_event', {
+        await callTool(client, 'update_task', {
           task_id: taskId,
           event_type: 'progress',
           body: message,
@@ -196,15 +207,16 @@ export function registerTaskCommands(program: Command): void {
       }
     });
 
-  // ── cv note ──────────────────────────────────────────────────
+  // ── ql update <id> note <message> ────────────────────────────
 
-  program
-    .command('note <task_id> <message>')
+  update
+    .command('note <message>')
     .description('Add a note to a task')
-    .action(async (taskId, message) => {
+    .action(async (message, _opts, cmd) => {
+      const taskId = cmd.parent!.args[0];
       const client = await createMcpClient();
       try {
-        await callTool(client, 'append_event', {
+        await callTool(client, 'update_task', {
           task_id: taskId,
           event_type: 'note',
           body: message,
@@ -216,46 +228,45 @@ export function registerTaskCommands(program: Command): void {
       }
     });
 
-  // ── cv handoff ───────────────────────────────────────────────
+  // ── ql update <id> handoff <user_id> [message] ──────────────
 
-  program
-    .command('handoff <task_id>')
+  update
+    .command('handoff <user_id> [message]')
     .description('Hand off a task to another user')
-    .requiredOption('--to <user_id>', 'Target user ID')
-    .option('--context <message>', 'Handoff context message')
-    .action(async (taskId, opts) => {
+    .action(async (userId, message, _opts, cmd) => {
+      const taskId = cmd.parent!.args[0];
       const client = await createMcpClient();
       try {
-        await callTool(client, 'append_event', {
+        await callTool(client, 'update_task', {
           task_id: taskId,
           event_type: 'handoff',
-          body: opts.context ?? '',
-          metadata: { to_user_id: opts.to },
+          body: message ?? '',
+          metadata: { to_user_id: userId },
           idempotency_key: idemKey(),
         });
-        console.log(`Task ${taskId} handed off to ${opts.to}`);
+        console.log(`Task ${taskId} handed off to ${userId}`);
       } finally {
         await client.close();
       }
     });
 
-  // ── cv block ─────────────────────────────────────────────────
+  // ── ql update <id> block [reason] ────────────────────────────
 
-  program
-    .command('block <task_id>')
+  update
+    .command('block [reason]')
     .description('Mark a task as blocked')
     .option('--blocked-by <id>', 'Blocking task ID')
-    .option('--reason <reason>', 'Block reason')
-    .action(async (taskId, opts) => {
+    .action(async (reason, opts, cmd) => {
+      const taskId = cmd.parent!.args[0];
       const metadata: Record<string, unknown> = {};
       if (opts.blockedBy) metadata.blocked_by_task_id = opts.blockedBy;
 
       const client = await createMcpClient();
       try {
-        await callTool(client, 'append_event', {
+        await callTool(client, 'update_task', {
           task_id: taskId,
           event_type: 'blocked',
-          body: opts.reason ?? '',
+          body: reason ?? '',
           metadata,
           idempotency_key: idemKey(),
         });
@@ -265,15 +276,16 @@ export function registerTaskCommands(program: Command): void {
       }
     });
 
-  // ── cv done ──────────────────────────────────────────────────
+  // ── ql update <id> done [message] ────────────────────────────
 
-  program
-    .command('done <task_id> [message]')
+  update
+    .command('done [message]')
     .description('Mark a task as completed')
-    .action(async (taskId, message) => {
+    .action(async (message, _opts, cmd) => {
+      const taskId = cmd.parent!.args[0];
       const client = await createMcpClient();
       try {
-        await callTool(client, 'append_event', {
+        await callTool(client, 'update_task', {
           task_id: taskId,
           event_type: 'completed',
           body: message ?? '',
@@ -285,21 +297,52 @@ export function registerTaskCommands(program: Command): void {
       }
     });
 
-  // ── cv cancel ────────────────────────────────────────────────
+  // ── ql update <id> cancel [reason] ───────────────────────────
 
-  program
-    .command('cancel <task_id> [reason]')
+  update
+    .command('cancel [reason]')
     .description('Cancel a task')
-    .action(async (taskId, reason) => {
+    .action(async (reason, _opts, cmd) => {
+      const taskId = cmd.parent!.args[0];
       const client = await createMcpClient();
       try {
-        await callTool(client, 'append_event', {
+        await callTool(client, 'update_task', {
           task_id: taskId,
           event_type: 'cancelled',
           body: reason ?? '',
           idempotency_key: idemKey(),
         });
         console.log(`Task ${taskId} cancelled.`);
+      } finally {
+        await client.close();
+      }
+    });
+
+  // ── ql update <id> set <field> <value> ───────────────────────
+
+  update
+    .command('set <field> <value>')
+    .description('Change a task field (title, priority, due_date, tags)')
+    .action(async (field, value, _opts, cmd) => {
+      const taskId = cmd.parent!.args[0];
+
+      // First get the current task to obtain old_value
+      const client = await createMcpClient();
+      try {
+        const result = await callTool(client, 'get_task', { task_id: taskId }) as Record<string, unknown>;
+        const currentValue = result[field];
+
+        let newValue: unknown = value;
+        if (field === 'priority') newValue = parseInt(value, 10);
+        if (field === 'tags') newValue = value.split(',').map((s: string) => s.trim());
+
+        await callTool(client, 'update_task', {
+          task_id: taskId,
+          event_type: 'field_changed',
+          metadata: { field, old_value: currentValue, new_value: newValue },
+          idempotency_key: idemKey(),
+        });
+        console.log(`Task ${taskId}: ${field} updated.`);
       } finally {
         await client.close();
       }

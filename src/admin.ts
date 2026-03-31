@@ -1,7 +1,7 @@
 import express, { Router } from 'express';
 import type { Request, Response } from 'express';
-import { getPool } from './db/pool.js';
-import { verifyToken } from './auth.js';
+import pg from 'pg';
+import { requireAuth, optionalAuth, getActorId } from './middleware.js';
 import {
   getUserById,
   listUsers,
@@ -16,46 +16,15 @@ import {
   deleteWebhook,
 } from './db/queries.js';
 import { acquireBootstrapLock, hasAnyAdmin } from './db/queries.js';
+import { registerWebhook } from './tools/webhooks.js';
 
 // ---------------------------------------------------------------------------
-// Auth middleware for admin routes
+// Admin check middleware
 // ---------------------------------------------------------------------------
-
-interface AuthedRequest extends Request {
-  actorId: string;
-}
-
-function requireAuth(req: Request, res: Response, next: () => void): void {
-  const authHeader = req.headers.authorization;
-  if (!authHeader?.startsWith('Bearer ')) {
-    res.status(401).json({ error: 'Authentication required' });
-    return;
-  }
-  try {
-    const payload = verifyToken(authHeader.slice(7));
-    (req as unknown as AuthedRequest).actorId = payload.sub;
-    next();
-  } catch {
-    res.status(401).json({ error: 'Invalid or expired token' });
-  }
-}
-
-function optionalAuth(req: Request, _res: Response, next: () => void): void {
-  const authHeader = req.headers.authorization;
-  if (authHeader?.startsWith('Bearer ')) {
-    try {
-      const payload = verifyToken(authHeader.slice(7));
-      (req as unknown as AuthedRequest).actorId = payload.sub;
-    } catch {
-      // Ignore invalid token — set-admin bootstrap may not have one
-    }
-  }
-  next();
-}
 
 async function requireAdmin(req: Request, res: Response, next: () => void): Promise<void> {
-  const actorId = (req as unknown as AuthedRequest).actorId;
-  const pool = getPool();
+  const actorId = getActorId(req);
+  const pool = (req as unknown as { _pool: pg.Pool })._pool;
   const client = await pool.connect();
   try {
     const actor = await getUserById(client, actorId);
@@ -73,11 +42,17 @@ async function requireAdmin(req: Request, res: Response, next: () => void): Prom
 // Router
 // ---------------------------------------------------------------------------
 
-export function createAdminRouter(): Router {
+export function createAdminRouter(pool: pg.Pool): Router {
   const router = Router();
 
   // Parse JSON bodies for admin routes
   router.use(express.json());
+
+  // Attach pool to request for middleware use
+  router.use((req: Request, _res: Response, next: () => void) => {
+    (req as unknown as { _pool: pg.Pool })._pool = pool;
+    next();
+  });
 
   // ── POST /admin/set-admin (before requireAuth — supports bootstrap) ──
   router.post('/set-admin', optionalAuth, async (req: Request, res: Response) => {
@@ -87,8 +62,7 @@ export function createAdminRouter(): Router {
       return;
     }
 
-    const actorId = (req as unknown as AuthedRequest).actorId;
-    const pool = getPool();
+    const actorId = getActorId(req);
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -138,8 +112,7 @@ export function createAdminRouter(): Router {
   // ── POST /admin/revoke-self ──────────────────────────────────────
   // Only way to remove admin status — you can only revoke your own
   router.post('/revoke-self', async (req: Request, res: Response) => {
-    const actorId = (req as unknown as AuthedRequest).actorId;
-    const pool = getPool();
+    const actorId = getActorId(req);
     const client = await pool.connect();
     try {
       const actor = await getUserById(client, actorId);
@@ -156,7 +129,6 @@ export function createAdminRouter(): Router {
 
   // ── GET /admin/users ─────────────────────────────────────────────
   router.get('/users', requireAdmin, async (_req: Request, res: Response) => {
-    const pool = getPool();
     const client = await pool.connect();
     try {
       const users = await listUsers(client);
@@ -168,7 +140,6 @@ export function createAdminRouter(): Router {
 
   // ── GET /admin/pending ───────────────────────────────────────────
   router.get('/pending', requireAdmin, async (_req: Request, res: Response) => {
-    const pool = getPool();
     const client = await pool.connect();
     try {
       const users = await listPendingUsers(client);
@@ -186,8 +157,7 @@ export function createAdminRouter(): Router {
       return;
     }
 
-    const actorId = (req as unknown as AuthedRequest).actorId;
-    const pool = getPool();
+    const actorId = getActorId(req);
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -216,7 +186,6 @@ export function createAdminRouter(): Router {
       return;
     }
 
-    const pool = getPool();
     const client = await pool.connect();
     try {
       const key = await getActiveKeyForUser(client, user_id);
@@ -234,7 +203,6 @@ export function createAdminRouter(): Router {
   // ── DELETE /admin/users/:id ──────────────────────────────────────
   router.delete('/users/:id', requireAdmin, async (req: Request, res: Response) => {
     const userId = req.params.id as string;
-    const pool = getPool();
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -249,9 +217,35 @@ export function createAdminRouter(): Router {
     }
   });
 
+  // ── POST /admin/webhooks ─────────────────────────────────────────
+  router.post('/webhooks', requireAdmin, async (req: Request, res: Response) => {
+    const { url, events } = req.body as { url?: string; events?: string[] };
+    if (!url || typeof url !== 'string') {
+      res.status(400).json({ error: 'url is required and must be a string' });
+      return;
+    }
+    if (!events || !Array.isArray(events) || events.length === 0) {
+      res.status(400).json({ error: 'events is required and must be a non-empty array' });
+      return;
+    }
+
+    const actorId = getActorId(req);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await registerWebhook(client, actorId, { url, events });
+      await client.query('COMMIT');
+      res.json(result);
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      client.release();
+    }
+  });
+
   // ── GET /admin/webhooks ──────────────────────────────────────────
   router.get('/webhooks', requireAdmin, async (_req: Request, res: Response) => {
-    const pool = getPool();
     const client = await pool.connect();
     try {
       const webhooks = await listWebhooks(client);
@@ -264,7 +258,6 @@ export function createAdminRouter(): Router {
   // ── DELETE /admin/webhooks/:id ───────────────────────────────────
   router.delete('/webhooks/:id', requireAdmin, async (req: Request, res: Response) => {
     const webhookId = req.params.id as string;
-    const pool = getPool();
     const client = await pool.connect();
     try {
       await deleteWebhook(client, webhookId);

@@ -32,7 +32,7 @@ export function registerAdminCommands(program: Command): void {
     .command('admin')
     .description('Admin commands: set admins, approve users, revoke keys, manage webhooks');
 
-  // ── cv admin set <user_id> ──────────────────────────────────────
+  // ── ql admin set <user_id> ──────────────────────────────────────
 
   admin
     .command('set <user_id>')
@@ -48,7 +48,7 @@ export function registerAdminCommands(program: Command): void {
       }
     });
 
-  // ── cv admin step-down ───────────────────────────────────────────
+  // ── ql admin step-down ───────────────────────────────────────────
 
   admin
     .command('step-down')
@@ -60,7 +60,7 @@ export function registerAdminCommands(program: Command): void {
       console.log(`Admin revoked: ${formatUser(result.user)}`);
     });
 
-  // ── cv admin approve <user_id> ──────────────────────────────────
+  // ── ql admin approve <user_id> ──────────────────────────────────
 
   admin
     .command('approve <user_id>')
@@ -76,7 +76,7 @@ export function registerAdminCommands(program: Command): void {
       }
     });
 
-  // ── cv admin list-pending ───────────────────────────────────────
+  // ── ql admin list-pending ───────────────────────────────────────
 
   admin
     .command('list-pending')
@@ -93,7 +93,7 @@ export function registerAdminCommands(program: Command): void {
       }
     });
 
-  // ── cv admin revoke-key <user_id> ──────────────────────────────
+  // ── ql admin revoke-key <user_id> ──────────────────────────────
 
   admin
     .command('revoke-key <user_id>')
@@ -104,7 +104,7 @@ export function registerAdminCommands(program: Command): void {
       console.log('User must register a new key and get re-approved.');
     });
 
-  // ── cv admin delete-user <user_id> ─────────────────────────────
+  // ── ql admin delete-user <user_id> ─────────────────────────────
 
   admin
     .command('delete-user <user_id>')
@@ -114,7 +114,27 @@ export function registerAdminCommands(program: Command): void {
       console.log(`Deleted user: ${userId}`);
     });
 
-  // ── cv admin webhooks ──────────────────────────────────────────
+  // ── ql admin add-webhook ─────────────────────────────────────────
+
+  admin
+    .command('add-webhook')
+    .description('Register a new webhook')
+    .requiredOption('--url <url>', 'Webhook endpoint URL')
+    .requiredOption('--events <events>', 'Comma-separated event types to subscribe to')
+    .action(async (opts) => {
+      const events = opts.events.split(',').map((s: string) => s.trim());
+      const result = await adminCall('POST', '/webhooks', { url: opts.url, events }) as {
+        webhook: Record<string, unknown>;
+        secret: string;
+      };
+      console.log(`Webhook registered: ${result.webhook.id}`);
+      console.log(`  URL: ${opts.url}`);
+      console.log(`  Events: ${events.join(', ')}`);
+      console.log(`  Secret: ${result.secret}`);
+      console.log(`\n  Save the secret — it won't be shown again.`);
+    });
+
+  // ── ql admin webhooks ──────────────────────────────────────────
 
   admin
     .command('webhooks')
@@ -132,7 +152,7 @@ export function registerAdminCommands(program: Command): void {
       }
     });
 
-  // ── cv admin delete-webhook <webhook_id> ───────────────────────
+  // ── ql admin delete-webhook <webhook_id> ───────────────────────
 
   admin
     .command('delete-webhook <webhook_id>')
@@ -142,7 +162,7 @@ export function registerAdminCommands(program: Command): void {
       console.log(`Deleted webhook: ${webhookId}`);
     });
 
-  // ── cv users ────────────────────────────────────────────────────
+  // ── ql users ────────────────────────────────────────────────────
 
   program
     .command('users')

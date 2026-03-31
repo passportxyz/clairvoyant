@@ -36,7 +36,7 @@ function makeEd25519Keypair() {
 
 // Set JWT secret for tests
 beforeEach(() => {
-  process.env.CV_JWT_SECRET = 'test-secret';
+  process.env.QL_JWT_SECRET = 'test-secret';
 });
 
 // ── JWT Tests ──────────────────────────────────────────────────
@@ -85,9 +85,9 @@ describe('verifyToken', () => {
     }
   });
 
-  it('throws when CV_JWT_SECRET is not set', () => {
-    delete process.env.CV_JWT_SECRET;
-    expect(() => signToken({ sub: 'u1', name: 'Alice' })).toThrow('CV_JWT_SECRET');
+  it('throws when QL_JWT_SECRET is not set', () => {
+    delete process.env.QL_JWT_SECRET;
+    expect(() => signToken({ sub: 'u1', name: 'Alice' })).toThrow('QL_JWT_SECRET');
   });
 });
 

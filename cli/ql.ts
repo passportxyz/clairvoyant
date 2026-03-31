@@ -13,8 +13,8 @@ const pkg = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'),
 const program = new Command();
 
 program
-  .name('cv')
-  .description('Clairvoyant — task management CLI')
+  .name('ql')
+  .description('Quest Log — task management CLI')
   .version(pkg.version);
 
 // Register all command groups

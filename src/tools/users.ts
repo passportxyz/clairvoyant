@@ -85,7 +85,7 @@ export async function registerUser(
       : 'New key registered — pending admin approval.';
   } else {
     result.warning = autoApprove
-      ? 'No admin configured — registration is open. Run "cv admin set <user_id>" to lock down.'
+      ? 'No admin configured — registration is open. Run "ql admin set <user_id>" to lock down.'
       : 'Registration pending admin approval.';
   }
 

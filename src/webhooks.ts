@@ -51,7 +51,7 @@ async function dispatchWebhooks(
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-CV-Signature': signature,
+            'X-QL-Signature': signature,
           },
           body,
           signal: AbortSignal.timeout(10_000), // 10s timeout

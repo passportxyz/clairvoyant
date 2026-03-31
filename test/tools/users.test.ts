@@ -45,7 +45,7 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
-  process.env.CV_JWT_SECRET = 'test-secret';
+  process.env.QL_JWT_SECRET = 'test-secret';
 });
 
 afterAll(async () => {

@@ -1,4 +1,4 @@
-# Clairvoyant Heartbeat
+# Quest Log Heartbeat
 
 ## Quick Tasks
 - [ ] Check git status for uncommitted changes
@@ -13,6 +13,8 @@
 _None_
 
 ## Notes
-- Repo is empty, awaiting initial scaffolding
-- GitHub repo at passportxyz/clairvoyant needs to be created by Lucian (no app installation for passportxyz org)
+- Renamed from Clairvoyant to Quest Log (CLI: `ql`, package: `quest-log`)
+- MCP surface: 5 tools (create_task, list_tasks, get_task, update_task, claim_task)
+- Auth/admin moved to REST endpoints
+- GitHub repo: passportxyz/questlog
 - Design decisions tracked in Tasks thread (6968)

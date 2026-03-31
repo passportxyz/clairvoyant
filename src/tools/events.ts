@@ -5,14 +5,14 @@ import {
   getUserById,
   insertEvent,
   getEventByIdempotencyKey,
-  updateTask,
+  updateTask as updateTaskRow,
 } from '../db/queries.js';
 import { applyEvent } from '../projection.js';
 import type { Event, EventType, Task, SideEffect } from '../types.js';
 
-// ── appendEvent ──────────────────────────────────────────────────
+// ── updateTask ───────────────────────────────────────────────────
 
-export interface AppendEventInput {
+export interface UpdateTaskInput {
   task_id: string;
   event_type: EventType;
   body?: string;
@@ -20,7 +20,7 @@ export interface AppendEventInput {
   idempotency_key: string;
 }
 
-export interface AppendEventResult {
+export interface UpdateTaskResult {
   event: Event;
   task: Task;
   sideEffects: SideEffect[];
@@ -38,11 +38,11 @@ const FIELD_CHANGED_ALLOWED = new Set(['title', 'priority', 'due_date', 'tags'])
  * Append an event to a task within a transaction.
  * Caller must have already called BEGIN on the client.
  */
-export async function appendEvent(
+export async function updateTask(
   client: pg.PoolClient,
   actorId: string,
-  input: AppendEventInput,
-): Promise<AppendEventResult | ClaimErrorResult> {
+  input: UpdateTaskInput,
+): Promise<UpdateTaskResult | ClaimErrorResult> {
   const metadata = input.metadata ?? {};
 
   // Idempotency check
@@ -114,7 +114,7 @@ export async function appendEvent(
 
   // Update task if projection produced updates
   if (Object.keys(taskUpdates).length > 0) {
-    const updated = await updateTask(client, task.id, task.version, taskUpdates);
+    const updated = await updateTaskRow(client, task.id, task.version, taskUpdates);
     if (!updated) {
       throw new Error(
         `Version conflict updating task ${task.id}: expected version ${task.version}`,
@@ -140,8 +140,8 @@ export async function claimTask(
   client: pg.PoolClient,
   actorId: string,
   input: ClaimTaskInput,
-): Promise<AppendEventResult | ClaimErrorResult> {
-  return appendEvent(client, actorId, {
+): Promise<UpdateTaskResult | ClaimErrorResult> {
+  return updateTask(client, actorId, {
     task_id: input.task_id,
     event_type: 'claimed',
     metadata: { user_id: actorId },

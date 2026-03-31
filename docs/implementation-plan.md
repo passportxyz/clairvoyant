@@ -1,6 +1,6 @@
-# The Clairvoyant — Implementation Plan
+# Quest Log — Implementation Plan
 
-An event-sourced task management system for human/agent collaboration. This document covers everything needed to build the core system. AI is the UI — humans talk to agents, agents talk to Clairvoyant.
+An event-sourced task management system for human/agent collaboration. This document covers everything needed to build the core system. AI is the UI — humans talk to agents, agents talk to Quest Log.
 
 ## Scope
 
@@ -12,7 +12,7 @@ An event-sourced task management system for human/agent collaboration. This docu
 
 ### MCP-Only Interface
 
-There is no REST API. The MCP server is the only way to talk to Clairvoyant. The CLI is an MCP client — it connects to the MCP server and calls tools, same as any agent. This means:
+There is no REST API. The MCP server is the only way to talk to Quest Log. The CLI is an MCP client — it connects to the MCP server and calls tools, same as any agent. This means:
 
 - One server implementation, one set of tool handlers
 - Auth uses standard bearer tokens (JWT) — env var for stdio, header for HTTP
@@ -35,12 +35,12 @@ The projection logic lives in a single function (`applyEvent`) that takes an eve
 ### Project Structure
 
 ```
-clairvoyant/
+quest-log/
 ├── src/
 │   ├── server.ts              -- MCP server entry point, tool registration
 │   ├── tools/
 │   │   ├── tasks.ts           -- create_task, list_tasks, get_task
-│   │   ├── events.ts          -- append_event, claim_task
+│   │   ├── events.ts          -- update_task, claim_task
 │   │   ├── users.ts           -- register_user, get_user, admin_pending, admin_approve
 │   │   └── webhooks.ts        -- register_webhook
 │   ├── db/
@@ -58,7 +58,7 @@ clairvoyant/
 │   ├── 003_create_events.sql
 │   └── 004_create_webhooks.sql
 ├── cli/
-│   ├── cv.ts                  -- CLI entry point (MCP client)
+│   ├── ql.ts                  -- CLI entry point (MCP client)
 │   └── commands/              -- one file per command group
 ├── SKILL.md                   -- agent guidance document
 ├── test/
@@ -270,7 +270,7 @@ Single task with its full event history.
 }
 ```
 
-### append_event
+### update_task
 
 Append an event to a task. This is the primary write operation.
 
@@ -417,11 +417,11 @@ The MCP spec doesn't support custom auth handshakes. Claude Code agents run in s
 
 ### How it works
 
-1. **CLI generates an ed25519 keypair** during `cv init` — stored at `~/.cv/id_ed25519`
+1. **CLI generates an ed25519 keypair** during `ql init` — stored at `~/.ql/id_ed25519`
 2. **CLI registers the public key** via `register_user` (unauthenticated tool)
 3. **CLI obtains a token** via `authenticate` tool — signs a server nonce with the private key, gets back a JWT
 4. **Token is passed to MCP** via the standard mechanisms:
-   - **stdio transport:** `CV_TOKEN` environment variable
+   - **stdio transport:** `QL_TOKEN` environment variable
    - **HTTP transport:** `Authorization: Bearer <token>` header
 5. **Server validates the token** on every tool call, extracts `actor_id`
 6. Tokens are long-lived (configurable, default 90 days) with refresh
@@ -430,17 +430,17 @@ The MCP spec doesn't support custom auth handshakes. Claude Code agents run in s
 
 ```
 # First time setup (CLI handles this)
-cv init                        → generates ~/.cv/id_ed25519
-cv register --name "Lucian"    → calls register_user(name, public_key)
+ql init                        → generates ~/.ql/id_ed25519
+ql register --name "Lucian"    → calls register_user(name, public_key)
                                  admin approves (or auto-approve for agents)
-cv auth login                  → calls authenticate tool:
+ql auth login                  → calls authenticate tool:
 
 Client → Server:  authenticate { user_id, action: "request_challenge" }
 Server → Client:  { nonce: "random-bytes-hex" }
 Client → Server:  authenticate { user_id, nonce, signature: sign(nonce, private_key) }
 Server → Client:  { token: "eyJhbG...", expires_at: "..." }
 
-# Token stored at ~/.cv/token
+# Token stored at ~/.ql/token
 ```
 
 ### How agents connect
@@ -449,20 +449,20 @@ Agents never touch SSH keys. Their parent (human) provisions them:
 
 ```bash
 # Human registers an agent identity
-cv agent create --name "my-build-bot"
+ql agent create --name "my-build-bot"
 # → Generates keypair, registers with parent_id = human's user_id
 # → Agent is auto-approved (parent is trusted)
 # → Returns a token for the agent
 
 # Agent's MCP config (e.g. .mcp.json or claude mcp add)
 claude mcp add --transport stdio \
-  --env CV_TOKEN=eyJhbG... \
-  clairvoyant -- npx @clairvoyant/mcp
+  --env QL_TOKEN=eyJhbG... \
+  quest-log -- npx @quest-log/mcp
 
 # Or for HTTP transport
 claude mcp add --transport http \
   --header "Authorization: Bearer eyJhbG..." \
-  clairvoyant https://cv.example.com/mcp
+  quest-log https://quest-log.example.com/mcp
 ```
 
 ### Token format
@@ -484,7 +484,7 @@ JWTs signed with a server-side secret (HS256 for v1, RS256 if we need distribute
 
 Every tool call except `register_user` and `authenticate` requires a valid token. The server extracts the token from:
 
-- **stdio:** `CV_TOKEN` env var, read once at connection startup
+- **stdio:** `QL_TOKEN` env var, read once at connection startup
 - **HTTP:** `Authorization: Bearer <token>` header on each request
 
 ```typescript
@@ -499,7 +499,7 @@ function extractActorId(context: McpContext): string {
 
 ### The `authenticate` tool
 
-This is the only tool that uses SSH key crypto. It exists solely for the CLI's `cv auth login` flow.
+This is the only tool that uses SSH key crypto. It exists solely for the CLI's `ql auth login` flow.
 
 ```typescript
 // Input (step 1 — request challenge)
@@ -533,7 +533,7 @@ When a side effect includes `{ type: 'webhook' }`, the system:
 1. Queries `webhooks` table for active webhooks matching the event type
 2. For each match, POST to the URL with:
    - Body: `{ event, task }` (the event that triggered it + current task state)
-   - Header: `X-CV-Signature` — HMAC-SHA256 of the body using the webhook's secret
+   - Header: `X-QL-Signature` — HMAC-SHA256 of the body using the webhook's secret
 3. Fire-and-forget for v1 — log failures but don't retry. Retry logic is a future enhancement.
 
 Webhook dispatch happens asynchronously after the transaction commits — it should not block the tool response.
@@ -546,7 +546,7 @@ A periodic job (runs every minute via `setInterval`) that:
 2. For tasks that haven't already been alerted, fires a webhook event of type `stale`
 3. Tracks which tasks have been alerted to avoid duplicate notifications
 
-The staleness interval is configurable via environment variable (`CV_STALENESS_INTERVAL_MS`, default 3600000 / 1 hour).
+The staleness interval is configurable via environment variable (`QL_STALENESS_INTERVAL_MS`, default 3600000 / 1 hour).
 
 This is a simple in-process check, not a separate worker. If the server restarts, it just re-checks on the next interval.
 
@@ -560,62 +560,62 @@ When a `completed` or `cancelled` event is processed:
 
 "Unresolved" means: there's a `blocked` event with a `blocked_by_task_id`, and no subsequent `unblocked` event referencing the same blocker.
 
-## CLI (`cv`)
+## CLI (`ql`)
 
-The CLI is an MCP client — it connects to the Clairvoyant MCP server and calls tools. It handles SSH key management, token issuance, and auth transparently.
+The CLI is an MCP client — it connects to the Quest Log MCP server and calls tools. It handles SSH key management, token issuance, and auth transparently.
 
 ### Auth & setup commands
 
 ```bash
-cv init                          # generate ed25519 keypair at ~/.cv/id_ed25519
-cv register --name "Lucian"      # register public key with server (calls register_user)
-cv auth login                    # SSH challenge/response → gets JWT, stores at ~/.cv/token
-cv auth status                   # show current user, token expiry
-cv agent create --name "bot"     # register an agent under your identity, returns its token
-cv mcp-config                    # print the MCP config snippet for agents to use
+ql init                          # generate ed25519 keypair at ~/.ql/id_ed25519
+ql register --name "Lucian"      # register public key with server (calls register_user)
+ql auth login                    # SSH challenge/response → gets JWT, stores at ~/.ql/token
+ql auth status                   # show current user, token expiry
+ql agent create --name "bot"     # register an agent under your identity, returns its token
+ql mcp-config                    # print the MCP config snippet for agents to use
 ```
 
 ### Task commands
 
 ```bash
-cv add "Fix the login bug"       # calls create_task
-cv add "My thing" --owner me     # calls create_task with owner_id
-cv list --mine                   # calls list_tasks with owner_id=me
-cv list --unowned                # calls list_tasks with owner_id=null
-cv claim 47                      # calls claim_task
-cv progress 47 "Found the root cause"  # calls append_event(progress)
-cv note 47 "Context for whoever"       # calls append_event(note)
-cv handoff 47 --to <user_id> --context "Need DB credentials"  # calls append_event(handoff)
-cv block 47 --depends-on 32     # calls append_event(blocked)
-cv done 47                       # calls append_event(completed)
-cv cancel 47                     # calls append_event(cancelled)
-cv admin pending                 # calls admin_pending
-cv admin approve <user_id>       # calls admin_approve
+ql add "Fix the login bug"                    # calls create_task
+ql add "My thing" --owner me                  # calls create_task with owner_id
+ql list --mine                                # calls list_tasks with owner_id=me
+ql list --unowned                             # calls list_tasks with owner_id=null
+ql claim 47                                   # calls claim_task
+ql update 47 progress "Found the root cause"  # calls update_task(progress)
+ql update 47 note "Context for whoever"       # calls update_task(note)
+ql update 47 handoff <user_id> "Need creds"   # calls update_task(handoff)
+ql update 47 block --blocked-by 32            # calls update_task(blocked)
+ql update 47 done                             # calls update_task(completed)
+ql update 47 cancel "reason"                  # calls update_task(cancelled)
+ql admin list-pending                         # list pending users
+ql admin approve <user_id>                    # approve a user
 ```
 
 ### Config files
 
 ```
-~/.cv/
+~/.ql/
 ├── id_ed25519       # private key
 ├── id_ed25519.pub   # public key
 ├── token            # current JWT
 └── config           # server URL, user_id
 ```
 
-### `cv mcp-config`
+### `ql mcp-config`
 
 Outputs a ready-to-paste MCP config for agents:
 
 ```json
 {
   "mcpServers": {
-    "clairvoyant": {
+    "quest-log": {
       "command": "npx",
-      "args": ["@clairvoyant/mcp"],
+      "args": ["@quest-log/mcp"],
       "env": {
-        "CV_TOKEN": "eyJhbG...",
-        "CV_SERVER_URL": "https://cv.example.com"
+        "QL_TOKEN": "eyJhbG...",
+        "QL_SERVER_URL": "https://quest-log.example.com"
       }
     }
   }
@@ -627,7 +627,7 @@ This is what goes into `.mcp.json` (project-scoped) or gets added via `claude mc
 ## SKILL.md
 
 Shipped alongside the MCP server. Explains to agents:
-- What Clairvoyant is and the handoff model
+- What Quest Log is and the handoff model
 - When to use each event type
 - What a good task description looks like
 - How to report capability gaps vs regular blockers
@@ -698,13 +698,13 @@ export async function withTransaction(fn: (client: PoolClient) => Promise<void>)
 
 ```bash
 # .env
-DATABASE_URL=postgresql://user:pass@localhost:5432/clairvoyant
-TEST_DATABASE_URL=postgresql://user:pass@localhost:5432/clairvoyant_test
-CV_JWT_SECRET=your-secret-here     # signs/verifies tokens
-CV_TOKEN_EXPIRY_DAYS=90            # token lifetime
-CV_STALENESS_INTERVAL_MS=3600000   # 1 hour
-CV_TRANSPORT=stdio                 # or http
-CV_HTTP_PORT=3000                  # only if transport=http
+DATABASE_URL=postgresql://user:pass@localhost:5432/quest_log
+TEST_DATABASE_URL=postgresql://user:pass@localhost:5432/quest_log_test
+QL_JWT_SECRET=your-secret-here     # signs/verifies tokens
+QL_TOKEN_EXPIRY_DAYS=90            # token lifetime
+QL_STALENESS_INTERVAL_MS=3600000   # 1 hour
+QL_TRANSPORT=stdio                 # or http
+QL_HTTP_PORT=3000                  # only if transport=http
 ```
 
 ### docker-compose.yml
@@ -714,9 +714,9 @@ services:
   postgres:
     image: postgres:16
     environment:
-      POSTGRES_USER: clairvoyant
-      POSTGRES_PASSWORD: clairvoyant
-      POSTGRES_DB: clairvoyant
+      POSTGRES_USER: quest_log
+      POSTGRES_PASSWORD: quest_log
+      POSTGRES_DB: quest_log
     ports:
       - "5432:5432"
     volumes:
@@ -726,17 +726,17 @@ volumes:
   pgdata:
 ```
 
-Test DB is created by the test setup script: `CREATE DATABASE clairvoyant_test`.
+Test DB is created by the test setup script: `CREATE DATABASE quest_log_test`.
 
 ## Implementation Order
 
 1. **Project scaffolding** — package.json, tsconfig, vitest config, docker-compose, test setup
 2. **Migrations** — all 4 migration files, migration runner
 3. **Projection** — `applyEvent()` with unit tests
-4. **Core tools** — create_task, list_tasks, get_task, append_event, claim_task — with integration tests calling handlers directly
+4. **Core tools** — create_task, list_tasks, get_task, update_task, claim_task — with integration tests calling handlers directly
 5. **MCP server wiring** — register tools, stdio/SSE transport
 6. **Auth** — JWT verification middleware, `authenticate` tool (nonce + SSH signature → token) + tests
-7. **User management** — register_user, admin tools, `cv agent create` + tests
+7. **User management** — register_user, admin tools, `ql agent create` + tests
 8. **Webhooks** — registration, dispatch, signature + tests
 9. **Staleness** — periodic check + tests
 10. **Dependency auto-unblock** — completion triggers unblock + tests

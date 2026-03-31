@@ -2,15 +2,15 @@ services:
   postgres:
     image: postgres:16
     environment:
-      POSTGRES_USER: clairvoyant
-      POSTGRES_PASSWORD: clairvoyant
-      POSTGRES_DB: clairvoyant
+      POSTGRES_USER: quest_log
+      POSTGRES_PASSWORD: quest_log
+      POSTGRES_DB: quest_log
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U clairvoyant"]
+      test: ["CMD-SHELL", "pg_isready -U quest_log"]
       interval: 5s
       timeout: 5s
       retries: 5

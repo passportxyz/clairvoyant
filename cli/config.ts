@@ -14,48 +14,48 @@ const pkg = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'),
 // Paths
 // ---------------------------------------------------------------------------
 
-const CV_DIR = join(homedir(), '.cv');
-const CONFIG_PATH = join(CV_DIR, 'config');
-const TOKEN_PATH = join(CV_DIR, 'token');
-const KEY_PATH = join(CV_DIR, 'id_ed25519');
-const PUBKEY_PATH = join(CV_DIR, 'id_ed25519.pub');
+const QL_DIR = join(homedir(), '.ql');
+const CONFIG_PATH = join(QL_DIR, 'config');
+const TOKEN_PATH = join(QL_DIR, 'token');
+const KEY_PATH = join(QL_DIR, 'id_ed25519');
+const PUBKEY_PATH = join(QL_DIR, 'id_ed25519.pub');
 
-export { CV_DIR, CONFIG_PATH, TOKEN_PATH, KEY_PATH, PUBKEY_PATH };
+export { QL_DIR, CONFIG_PATH, TOKEN_PATH, KEY_PATH, PUBKEY_PATH };
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
-export interface CvConfig {
+export interface QlConfig {
   user_id?: string;
   server_url?: string;
 }
 
-export async function ensureCvDir(): Promise<void> {
-  if (!existsSync(CV_DIR)) {
-    await mkdir(CV_DIR, { recursive: true, mode: 0o700 });
+export async function ensureQlDir(): Promise<void> {
+  if (!existsSync(QL_DIR)) {
+    await mkdir(QL_DIR, { recursive: true, mode: 0o700 });
   }
 }
 
-export async function loadConfig(): Promise<CvConfig> {
+export async function loadConfig(): Promise<QlConfig> {
   try {
     const raw = await readFile(CONFIG_PATH, 'utf-8');
-    return JSON.parse(raw) as CvConfig;
+    return JSON.parse(raw) as QlConfig;
   } catch {
     return {};
   }
 }
 
-export async function saveConfig(config: CvConfig): Promise<void> {
-  await ensureCvDir();
+export async function saveConfig(config: QlConfig): Promise<void> {
+  await ensureQlDir();
   await writeFile(CONFIG_PATH, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
 }
 
 export async function getServerUrl(): Promise<string> {
-  if (process.env.CV_SERVER_URL) return process.env.CV_SERVER_URL;
+  if (process.env.QL_SERVER_URL) return process.env.QL_SERVER_URL;
   const config = await loadConfig();
   if (!config.server_url) {
-    throw new Error('No server URL configured. Run "cv init --host <url>" or set CV_SERVER_URL.');
+    throw new Error('No server URL configured. Run "ql init --host <url>" or set QL_SERVER_URL.');
   }
   return config.server_url;
 }
@@ -74,7 +74,7 @@ export async function loadToken(): Promise<string | null> {
 }
 
 export async function saveToken(token: string): Promise<void> {
-  await ensureCvDir();
+  await ensureQlDir();
   await writeFile(TOKEN_PATH, token + '\n', { mode: 0o600 });
 }
 
@@ -87,7 +87,7 @@ export async function loadPublicKey(): Promise<string> {
     const raw = await readFile(PUBKEY_PATH, 'utf-8');
     return raw.trim();
   } catch {
-    throw new Error(`No public key found at ${PUBKEY_PATH}. Run "cv init" first.`);
+    throw new Error(`No public key found at ${PUBKEY_PATH}. Run "ql init" first.`);
   }
 }
 
@@ -96,7 +96,7 @@ export async function loadPrivateKey(): Promise<string> {
     const raw = await readFile(KEY_PATH, 'utf-8');
     return raw.trim();
   } catch {
-    throw new Error(`No private key found at ${KEY_PATH}. Run "cv init" first.`);
+    throw new Error(`No private key found at ${KEY_PATH}. Run "ql init" first.`);
   }
 }
 
@@ -105,21 +105,16 @@ export async function loadPrivateKey(): Promise<string> {
 // ---------------------------------------------------------------------------
 
 export interface McpClientOptions {
-  /** If set, use this token instead of reading from ~/.cv/token */
+  /** If set, use this token instead of reading from ~/.ql/token */
   token?: string;
-  /** If set, skip sending a token (for unauthenticated tool calls) */
-  noAuth?: boolean;
 }
 
 /**
- * Create and connect an MCP client to the Clairvoyant server via HTTP.
+ * Create and connect an MCP client to the Quest Log server via HTTP.
  * The token is sent as an Authorization: Bearer header.
  */
 export async function createMcpClient(opts: McpClientOptions = {}): Promise<Client> {
-  let token = opts.token ?? null;
-  if (!opts.noAuth && !token) {
-    token = await loadToken();
-  }
+  const token = opts.token ?? await loadToken();
 
   const serverUrl = await getServerUrl();
 
@@ -134,7 +129,7 @@ export async function createMcpClient(opts: McpClientOptions = {}): Promise<Clie
   );
 
   const client = new Client(
-    { name: 'cv-cli', version: pkg.version },
+    { name: 'ql-cli', version: pkg.version },
   );
 
   await client.connect(transport);
@@ -170,31 +165,15 @@ export async function callTool(
   return parsed;
 }
 
-/**
- * Helper: create client, call tool, close client, return result.
- */
-export async function quickCall(
-  name: string,
-  args: Record<string, unknown> = {},
-  opts: McpClientOptions = {},
-): Promise<unknown> {
-  const client = await createMcpClient(opts);
-  try {
-    return await callTool(client, name, args);
-  } finally {
-    await client.close();
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Admin REST API
 // ---------------------------------------------------------------------------
 
 /**
- * Get the base URL for the admin REST API.
+ * Get the base URL for REST APIs.
  * Derives from the MCP server URL (strips /mcp suffix).
  */
-async function getAdminBaseUrl(): Promise<string> {
+async function getBaseUrl(): Promise<string> {
   const serverUrl = await getServerUrl();
   return serverUrl.replace(/\/mcp$/, '');
 }
@@ -207,10 +186,10 @@ export async function adminCall(
   path: string,
   body?: Record<string, unknown>,
 ): Promise<unknown> {
-  const baseUrl = await getAdminBaseUrl();
+  const baseUrl = await getBaseUrl();
   const token = await loadToken();
   if (!token) {
-    throw new Error('Authentication required. Run "cv auth login" first.');
+    throw new Error('Authentication required. Run "ql auth login" first.');
   }
 
   const headers: Record<string, string> = {
@@ -219,6 +198,39 @@ export async function adminCall(
   };
 
   const res = await fetch(`${baseUrl}/admin${path}`, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  const data = await res.json() as Record<string, unknown>;
+
+  if (!res.ok) {
+    throw new Error(data.error as string ?? `HTTP ${res.status}`);
+  }
+
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// Auth REST API (unauthenticated endpoints)
+// ---------------------------------------------------------------------------
+
+/**
+ * Call an auth REST endpoint. Does not require a token.
+ */
+export async function authCall(
+  method: 'GET' | 'POST',
+  path: string,
+  body?: Record<string, unknown>,
+): Promise<unknown> {
+  const baseUrl = await getBaseUrl();
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+
+  const res = await fetch(`${baseUrl}/auth${path}`, {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,

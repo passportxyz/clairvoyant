@@ -9,7 +9,7 @@ const alertedTaskIds = new Set<string>();
  */
 export async function checkStaleTasks(pool: pg.Pool): Promise<Task[]> {
   const intervalMs = parseInt(
-    process.env.CV_STALENESS_INTERVAL_MS ?? '3600000',
+    process.env.QL_STALENESS_INTERVAL_MS ?? '3600000',
     10,
   );
   const threshold = new Date(Date.now() - intervalMs);

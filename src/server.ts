@@ -23,14 +23,11 @@ import { clearStaleAlert } from './staleness.js';
 // Tool handlers
 import { createTask } from './tools/tasks.js';
 import { getTask } from './tools/tasks.js';
-import { appendEvent } from './tools/events.js';
+import { updateTask } from './tools/events.js';
 import { claimTask } from './tools/events.js';
-import {
-  registerUser, getUser, authenticate,
-} from './tools/users.js';
-import { registerWebhook } from './tools/webhooks.js';
-import { listTasks } from './db/queries.js';
+import { listTasks, listUsers } from './db/queries.js';
 import { createAdminRouter } from './admin.js';
+import { createAuthRouter } from './auth-router.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -86,55 +83,6 @@ function withClient<T>(handler: ToolHandler<T>, opts: { write?: boolean } = {}) 
   };
 }
 
-/**
- * Wrap an unauthenticated tool handler (no actorId).
- */
-function withClientNoAuth<T>(handler: (client: import('pg').PoolClient, params: T) => Promise<unknown>) {
-  return async (params: T, _extra: { authInfo?: AuthInfo }) => {
-    try {
-      const pool = getPool();
-      const client = await pool.connect();
-      try {
-        const result = await handler(client, params);
-        return textResult(result);
-      } finally {
-        client.release();
-      }
-    } catch (err) {
-      return errorResult(err);
-    }
-  };
-}
-
-/**
- * Wrap a tool that optionally uses auth (e.g. set_admin bootstrap).
- * Passes actorId as null if no auth is present.
- */
-function withClientOptionalAuth<T>(
-  handler: (client: import('pg').PoolClient, actorId: string | null, params: T) => Promise<unknown>,
-  opts: { write?: boolean } = {},
-) {
-  return async (params: T, extra: { authInfo?: AuthInfo }) => {
-    try {
-      const actorId = extra.authInfo?.extra?.actorId as string | undefined ?? null;
-      const pool = getPool();
-      const client = await pool.connect();
-      try {
-        if (opts.write) await client.query('BEGIN');
-        const result = await handler(client, actorId, params);
-        if (opts.write) await client.query('COMMIT');
-        return textResult(result);
-      } catch (err) {
-        if (opts.write) await client.query('ROLLBACK').catch(() => {});
-        throw err;
-      } finally {
-        client.release();
-      }
-    } catch (err) {
-      return errorResult(err);
-    }
-  };
-}
 
 /**
  * Fire-and-forget side effect processing after a successful commit.
@@ -151,8 +99,8 @@ function processSideEffectsFromResult(result: unknown): void {
   const pool = getPool();
 
   for (const effect of sideEffects) {
-    if (effect.type === 'webhook' && event && task) {
-      processSideEffects(pool, [{ type: 'webhook', eventType: effect.eventType! }], event, task).catch((err) => {
+    if (effect.type === 'webhook' && effect.eventType && event && task) {
+      processSideEffects(pool, [{ type: 'webhook', eventType: effect.eventType }], event, task).catch((err) => {
         console.error('Webhook dispatch error:', err);
       });
     } else if (effect.type === 'check_unblocks' && effect.taskId && event) {
@@ -183,7 +131,7 @@ function processSideEffectsFromResult(result: unknown): void {
 
 function createServer(): McpServer {
   const server = new McpServer(
-    { name: 'clairvoyant', version: pkg.version },
+    { name: 'quest-log', version: pkg.version },
     { capabilities: { tools: {} } },
   );
 
@@ -191,7 +139,7 @@ function createServer(): McpServer {
 
   server.tool(
     'create_task',
-    'Create a persistent tracked work item in Clairvoyant — for cross-session coordination, delegation between agents/humans, and work that needs an audit trail. Not for ephemeral to-dos or background processes.',
+    'Create a persistent tracked work item in Quest Log — for cross-session coordination, delegation between agents/humans, and work that needs an audit trail. Not for ephemeral to-dos or background processes.',
     {
       title: z.string(),
       body: z.string(),
@@ -215,7 +163,7 @@ function createServer(): McpServer {
 
   server.tool(
     'list_tasks',
-    'List Clairvoyant work items with optional filters for status, owner, tags, parent, creator',
+    'List Quest Log work items with optional filters for status, owner, tags, parent, creator',
     {
       status: z.enum(['open', 'done', 'cancelled']).optional(),
       owner_id: z.string().nullable().optional(),
@@ -233,7 +181,7 @@ function createServer(): McpServer {
 
   server.tool(
     'get_task',
-    'Get a Clairvoyant work item by ID, including its full event history',
+    'Get a Quest Log work item by ID, including its full event history',
     {
       task_id: z.string(),
     },
@@ -242,11 +190,11 @@ function createServer(): McpServer {
     }),
   );
 
-  // ── append_event ─────────────────────────────────────────────────
+  // ── update_task ──────────────────────────────────────────────────
 
   server.tool(
-    'append_event',
-    'Append an event to a Clairvoyant work item (note, progress, handoff, field_changed, completed, cancelled, etc.)',
+    'update_task',
+    'Update a Quest Log work item by appending an event (note, progress, handoff, field_changed, completed, cancelled, etc.)',
     {
       task_id: z.string(),
       event_type: z.enum([
@@ -258,7 +206,7 @@ function createServer(): McpServer {
       idempotency_key: z.string(),
     },
     withClient(async (client, actorId, params) => {
-      return appendEvent(client, actorId, params);
+      return updateTask(client, actorId, params);
     }, { write: true }),
   );
 
@@ -266,7 +214,7 @@ function createServer(): McpServer {
 
   server.tool(
     'claim_task',
-    'Claim an unowned Clairvoyant work item — sets the caller as the owner',
+    'Claim an unowned Quest Log work item — sets the caller as the owner',
     {
       task_id: z.string(),
       idempotency_key: z.string(),
@@ -276,61 +224,15 @@ function createServer(): McpServer {
     }, { write: true }),
   );
 
-  // ── register_user (no auth) ──────────────────────────────────────
+  // ── list_users ──────────────────────────────────────────────────
 
   server.tool(
-    'register_user',
-    'Register a new Clairvoyant user, or re-register a new key for an existing user (after key revocation). Provide user_id to add a key to an existing user. If no admin exists, auto-approved. Otherwise pending admin approval.',
-    {
-      name: z.string().min(1).max(255),
-      public_key: z.string().max(1024).optional().describe('ed25519 public key — provide if user needs to authenticate'),
-      user_id: z.string().uuid().optional().describe('Existing user ID — to register a new key after revocation'),
-    },
-    withClientOptionalAuth(async (client, _actorId, params) => {
-      return registerUser(client, params);
-    }, { write: true }),
-  );
-
-  // ── get_user ─────────────────────────────────────────────────────
-
-  server.tool(
-    'get_user',
-    'Get a Clairvoyant user by ID',
-    {
-      user_id: z.string(),
-    },
-    withClient(async (client, actorId, params) => {
-      return getUser(client, actorId, params);
-    }),
-  );
-
-  // ── authenticate (no auth) ───────────────────────────────────────
-
-  server.tool(
-    'authenticate',
-    'Authenticate with Clairvoyant: request a challenge nonce, or verify an ed25519 signature to get a JWT. No authentication required.',
-    {
-      user_id: z.string(),
-      action: z.enum(['request_challenge', 'verify']),
-      nonce: z.string().optional(),
-      signature: z.string().optional(),
-    },
-    withClientNoAuth(async (client, params) => {
-      return authenticate(client, params);
-    }),
-  );
-
-  // ── register_webhook ─────────────────────────────────────────────
-
-  server.tool(
-    'register_webhook',
-    'Register a webhook URL to receive Clairvoyant event notifications (task changes, handoffs, etc.)',
-    {
-      url: z.string().url(),
-      events: z.array(z.string()),
-    },
-    withClient(async (client, actorId, params) => {
-      return registerWebhook(client, actorId, params);
+    'list_users',
+    'List all active users — useful for discovering handoff targets',
+    {},
+    withClient(async (client, _actorId, _params) => {
+      const users = await listUsers(client);
+      return { users };
     }),
   );
 
@@ -347,20 +249,23 @@ async function main() {
   const pool = getPool();
 
   // Run migrations on startup
-  console.error('[clairvoyant] Running migrations...');
+  console.error('[quest-log] Running migrations...');
   await runMigrations(pool);
-  console.error('[clairvoyant] Migrations complete.');
+  console.error('[quest-log] Migrations complete.');
 
   // Start staleness checker
   const { startStalenessChecker } = await import('./staleness.js');
   startStalenessChecker(pool);
-  console.error('[clairvoyant] Staleness checker started.');
+  console.error('[quest-log] Staleness checker started.');
 
   // Express app with MCP defaults (JSON body parser, host validation)
   const app = createMcpExpressApp({ host: '0.0.0.0' });
 
   // Mount admin REST API (not MCP — CLI-only)
-  app.use('/admin', createAdminRouter());
+  app.use('/admin', createAdminRouter(pool));
+
+  // Mount auth REST API (registration, challenge/response auth, user lookup)
+  app.use('/auth', createAuthRouter(pool));
 
   // JWT auth middleware — extracts Bearer token and attaches as AuthInfo
   app.use('/mcp', (req: Request, _res: Response, next: NextFunction) => {
@@ -434,7 +339,7 @@ async function main() {
         res.status(400).json({ error: 'Bad Request: missing session ID' });
       }
     } catch (err) {
-      console.error('[clairvoyant] Request error:', err);
+      console.error('[quest-log] Request error:', err);
       if (!res.headersSent) {
         res.status(500).json({ error: 'Internal server error' });
       }
@@ -448,12 +353,12 @@ async function main() {
 
   const port = parseInt(process.env.PORT || '3000', 10);
   const httpServer = app.listen(port, '0.0.0.0', () => {
-    console.error(`[clairvoyant] MCP server listening on http://0.0.0.0:${port}/mcp`);
+    console.error(`[quest-log] MCP server listening on http://0.0.0.0:${port}/mcp`);
   });
 
   // Graceful shutdown
   const cleanup = async () => {
-    console.error('[clairvoyant] Shutting down...');
+    console.error('[quest-log] Shutting down...');
     httpServer.close();
     for (const { server, transport } of sessions.values()) {
       await transport.close();
@@ -468,6 +373,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('[clairvoyant] Fatal error:', err);
+  console.error('[quest-log] Fatal error:', err);
   process.exit(1);
 });
