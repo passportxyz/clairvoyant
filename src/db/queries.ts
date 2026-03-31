@@ -471,3 +471,41 @@ export async function getActiveWebhooksByEventType(
   );
   return rows;
 }
+
+export async function listWebhooks(
+  client: pg.PoolClient,
+): Promise<Webhook[]> {
+  const { rows } = await client.query<Webhook>(
+    'SELECT * FROM webhooks ORDER BY created_at ASC',
+  );
+  return rows;
+}
+
+export async function deleteWebhook(
+  client: pg.PoolClient,
+  webhookId: string,
+): Promise<void> {
+  const { rowCount } = await client.query(
+    'DELETE FROM webhooks WHERE id = $1',
+    [webhookId],
+  );
+  if (rowCount === 0) throw new Error(`Webhook not found: ${webhookId}`);
+}
+
+// ── User deletion ─────────────────────────────────────────────────
+
+export async function deleteUser(
+  client: pg.PoolClient,
+  userId: string,
+): Promise<void> {
+  // Delete keys first (FK constraint)
+  await client.query('DELETE FROM keys WHERE user_id = $1', [userId]);
+  // Delete webhooks owned by user
+  await client.query('DELETE FROM webhooks WHERE owner_id = $1', [userId]);
+  // Delete the user
+  const { rowCount } = await client.query(
+    'DELETE FROM users WHERE id = $1',
+    [userId],
+  );
+  if (rowCount === 0) throw new Error(`User not found: ${userId}`);
+}

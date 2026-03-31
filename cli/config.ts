@@ -180,3 +180,50 @@ export async function quickCall(
     await client.close();
   }
 }
+
+// ---------------------------------------------------------------------------
+// Admin REST API
+// ---------------------------------------------------------------------------
+
+/**
+ * Get the base URL for the admin REST API.
+ * Derives from the MCP server URL (strips /mcp suffix).
+ */
+async function getAdminBaseUrl(): Promise<string> {
+  const serverUrl = await getServerUrl();
+  return serverUrl.replace(/\/mcp$/, '');
+}
+
+/**
+ * Call an admin REST endpoint.
+ */
+export async function adminCall(
+  method: 'GET' | 'POST' | 'DELETE',
+  path: string,
+  body?: Record<string, unknown>,
+): Promise<unknown> {
+  const baseUrl = await getAdminBaseUrl();
+  const token = await loadToken();
+  if (!token) {
+    throw new Error('Authentication required. Run "cv auth login" first.');
+  }
+
+  const headers: Record<string, string> = {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json',
+  };
+
+  const res = await fetch(`${baseUrl}/admin${path}`, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  const data = await res.json() as Record<string, unknown>;
+
+  if (!res.ok) {
+    throw new Error(data.error as string ?? `HTTP ${res.status}`);
+  }
+
+  return data;
+}

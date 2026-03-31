@@ -10,10 +10,14 @@ import {
   registerUser,
   getUser,
   authenticate,
-  approveUser,
-  setAdminTool,
-  listPending,
 } from '../../src/tools/users.js';
+import {
+  activateUser,
+  setAdmin,
+  getActiveKeyForUser,
+  approveKey,
+  listPendingUsers,
+} from '../../src/db/queries.js';
 
 // ── Helpers ────────────────────────────────────────────────────
 
@@ -261,10 +265,10 @@ describe('authenticate', () => {
   });
 });
 
-// ── approveUser ───────────────────────────────────────────────
+// ── approve flow (DB queries directly) ────────────────────────
 
-describe('approveUser', () => {
-  it('admin can approve pending user', async () => {
+describe('approve flow', () => {
+  it('admin can approve pending user via DB queries', async () => {
     await withTransaction(async (client) => {
       const admin = await createTestUser(client, { name: 'Admin', is_admin: true });
 
@@ -276,54 +280,42 @@ describe('approveUser', () => {
       });
       expect(reg.user.status).toBe('pending');
 
-      // Approve
-      const result = await approveUser(client, admin.id, { user_id: reg.user.id });
-      expect(result.user.status).toBe('active');
-      expect(result.key?.status).toBe('approved');
-    });
-  });
+      // Approve via DB queries (as admin REST API does)
+      const user = await activateUser(client, reg.user.id);
+      expect(user.status).toBe('active');
 
-  it('non-admin cannot approve', async () => {
-    await withTransaction(async (client) => {
-      const admin = await createTestUser(client, { name: 'Admin', is_admin: true });
-      const regular = await createTestUser(client, { name: 'Regular' });
-
-      const { sshPubKey } = generateTestKeypair();
-      const reg = await registerUser(client, { name: 'Pending', public_key: sshPubKey });
-
-      await expect(
-        approveUser(client, regular.id, { user_id: reg.user.id }),
-      ).rejects.toThrow('Only admins');
+      const key = await getActiveKeyForUser(client, reg.user.id);
+      expect(key).not.toBeNull();
+      if (key && key.status === 'pending') {
+        const approved = await approveKey(client, key.id, admin.id);
+        expect(approved.status).toBe('approved');
+      }
     });
   });
 });
 
-// ── setAdmin ──────────────────────────────────────────────────
+// ── setAdmin (DB queries) ────────────────────────────────────
 
-describe('setAdminTool', () => {
-  it('bootstrap: first admin can be set without auth', async () => {
+describe('setAdmin', () => {
+  it('can promote a user to admin', async () => {
     await withTransaction(async (client) => {
       const user = await createTestUser(client, { name: 'FirstAdmin' });
 
-      const result = await setAdminTool(client, null, { user_id: user.id });
-      expect(result.user.is_admin).toBe(true);
-      expect(result.warning).toContain('First admin set');
+      const result = await setAdmin(client, user.id, true);
+      expect(result.is_admin).toBe(true);
     });
   });
 
-  it('after bootstrap: only admin can promote', async () => {
+  it('list pending returns only pending users', async () => {
     await withTransaction(async (client) => {
-      const admin = await createTestUser(client, { name: 'Admin', is_admin: true });
-      const regular = await createTestUser(client, { name: 'Regular' });
+      await createTestUser(client, { name: 'Admin', is_admin: true });
 
-      // Non-admin cannot promote
-      await expect(
-        setAdminTool(client, regular.id, { user_id: regular.id }),
-      ).rejects.toThrow('Only admins');
+      const { sshPubKey } = generateTestKeypair();
+      await registerUser(client, { name: 'Pending1', public_key: sshPubKey });
 
-      // Admin can promote
-      const result = await setAdminTool(client, admin.id, { user_id: regular.id });
-      expect(result.user.is_admin).toBe(true);
+      const pending = await listPendingUsers(client);
+      expect(pending.length).toBeGreaterThanOrEqual(1);
+      expect(pending.every((u) => u.status === 'pending')).toBe(true);
     });
   });
 });

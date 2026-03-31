@@ -20,11 +20,11 @@ import { getTask } from './tools/tasks.js';
 import { appendEvent } from './tools/events.js';
 import { claimTask } from './tools/events.js';
 import {
-  registerUser, getUser, listUsers, authenticate,
-  approveUser, setAdminTool, listPending, revokeUserKey,
+  registerUser, getUser, authenticate,
 } from './tools/users.js';
 import { registerWebhook } from './tools/webhooks.js';
 import { listTasks } from './db/queries.js';
+import { createAdminRouter } from './admin.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -298,17 +298,6 @@ function createServer(): McpServer {
     }),
   );
 
-  // ── list_users ───────────────────────────────────────────────────
-
-  server.tool(
-    'list_users',
-    'List all Clairvoyant users',
-    {},
-    withClient(async (client, actorId) => {
-      return listUsers(client, actorId);
-    }),
-  );
-
   // ── authenticate (no auth) ───────────────────────────────────────
 
   server.tool(
@@ -339,56 +328,6 @@ function createServer(): McpServer {
     }),
   );
 
-  // ── approve_user (admin only) ─────────────────────────────────────
-
-  server.tool(
-    'approve_user',
-    'Approve a pending Clairvoyant user registration. Admin only. Also approves their pending key.',
-    {
-      user_id: z.string(),
-    },
-    withClient(async (client, actorId, params) => {
-      return approveUser(client, actorId, params);
-    }, { write: true }),
-  );
-
-  // ── set_admin (admin or bootstrap) ────────────────────────────────
-
-  server.tool(
-    'set_admin',
-    'Promote a Clairvoyant user to admin. If no admin exists yet, anyone can call this (bootstrap). After that, only admins can promote.',
-    {
-      user_id: z.string(),
-    },
-    withClientOptionalAuth(async (client, actorId, params) => {
-      return setAdminTool(client, actorId, params);
-    }, { write: true }),
-  );
-
-  // ── list_pending (admin only) ─────────────────────────────────────
-
-  server.tool(
-    'list_pending',
-    'List Clairvoyant users awaiting admin approval. Admin only.',
-    {},
-    withClient(async (client, actorId) => {
-      return listPending(client, actorId);
-    }),
-  );
-
-  // ── revoke_key (admin only) ───────────────────────────────────────
-
-  server.tool(
-    'revoke_key',
-    'Revoke a Clairvoyant user\'s key. Admin only. User must register a new key and get re-approved.',
-    {
-      user_id: z.string(),
-    },
-    withClient(async (client, actorId, params) => {
-      return revokeUserKey(client, actorId, params);
-    }, { write: true }),
-  );
-
   return server;
 }
 
@@ -413,6 +352,9 @@ async function main() {
 
   // Express app with MCP defaults (JSON body parser, host validation)
   const app = createMcpExpressApp({ host: '0.0.0.0' });
+
+  // Mount admin REST API (not MCP — CLI-only)
+  app.use('/admin', createAdminRouter());
 
   // JWT auth middleware — extracts Bearer token and attaches as AuthInfo
   app.use('/mcp', (req: Request, _res: Response, next: NextFunction) => {

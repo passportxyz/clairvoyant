@@ -5,14 +5,8 @@ import {
   getActiveKeyForUser,
   insertUser,
   insertKey,
-  approveKey,
-  revokeKey,
-  activateUser,
   hasAnyAdmin,
   acquireBootstrapLock,
-  setAdmin as setAdminQuery,
-  listUsers as listUsersQuery,
-  listPendingUsers as listPendingUsersQuery,
 } from '../db/queries.js';
 import {
   generateNonce,
@@ -110,16 +104,6 @@ export async function getUser(
   return { user };
 }
 
-// ── listUsers ─────────────────────────────────────────────────────
-
-export async function listUsers(
-  client: pg.PoolClient,
-  _actorId: string,
-): Promise<{ users: User[] }> {
-  const users = await listUsersQuery(client);
-  return { users };
-}
-
 // ── authenticate (unauthenticated) ────────────────────────────────
 
 export interface AuthenticateInput {
@@ -185,109 +169,3 @@ export async function authenticate(
   return { token, expires_at, user };
 }
 
-// ── approveUser (admin only) ──────────────────────────────────────
-
-export async function approveUser(
-  client: pg.PoolClient,
-  actorId: string,
-  input: { user_id: string },
-): Promise<{ user: User; key?: { id: string; status: string } }> {
-  // Check caller is admin
-  const actor = await getUserById(client, actorId);
-  if (!actor?.is_admin) {
-    throw new Error('Only admins can approve users');
-  }
-
-  const user = await activateUser(client, input.user_id);
-
-  // Also approve their pending key if they have one
-  const key = await getActiveKeyForUser(client, input.user_id);
-  let keyResult: { id: string; status: string } | undefined;
-  if (key && key.status === 'pending') {
-    const approved = await approveKey(client, key.id, actorId);
-    keyResult = { id: approved.id, status: approved.status };
-  }
-
-  const result: { user: User; key?: { id: string; status: string } } = { user };
-  if (keyResult) result.key = keyResult;
-  return result;
-}
-
-// ── setAdmin (admin or bootstrap) ─────────────────────────────────
-
-export async function setAdminTool(
-  client: pg.PoolClient,
-  actorId: string | null,
-  input: { user_id: string },
-): Promise<{ user: User; warning?: string }> {
-  // Serialize bootstrap check to prevent concurrent unauthenticated promotions
-  await acquireBootstrapLock(client);
-  const adminExists = await hasAnyAdmin(client);
-
-  if (adminExists) {
-    // Must be called by an existing admin
-    if (!actorId) {
-      throw new Error('Authentication required');
-    }
-    const actor = await getUserById(client, actorId);
-    if (!actor?.is_admin) {
-      throw new Error('Only admins can promote other users to admin');
-    }
-  }
-
-  // Activate the user if pending (admins should be active)
-  await activateUser(client, input.user_id);
-
-  // Also approve their key if pending
-  const key = await getActiveKeyForUser(client, input.user_id);
-  if (key && key.status === 'pending' && actorId) {
-    await approveKey(client, key.id, actorId);
-  } else if (key && key.status === 'pending' && !actorId) {
-    // Bootstrap: self-approve
-    await approveKey(client, key.id, input.user_id);
-  }
-
-  const user = await setAdminQuery(client, input.user_id, true);
-
-  const result: { user: User; warning?: string } = { user };
-  if (!adminExists) {
-    result.warning = 'First admin set — registration is now locked down. New users will require approval.';
-  }
-  return result;
-}
-
-// ── listPending (admin only) ──────────────────────────────────────
-
-export async function listPending(
-  client: pg.PoolClient,
-  actorId: string,
-): Promise<{ users: User[] }> {
-  const actor = await getUserById(client, actorId);
-  if (!actor?.is_admin) {
-    throw new Error('Only admins can list pending users');
-  }
-
-  const users = await listPendingUsersQuery(client);
-  return { users };
-}
-
-// ── revokeUserKey (admin only) ────────────────────────────────────
-
-export async function revokeUserKey(
-  client: pg.PoolClient,
-  actorId: string,
-  input: { user_id: string },
-): Promise<{ revoked: boolean }> {
-  const actor = await getUserById(client, actorId);
-  if (!actor?.is_admin) {
-    throw new Error('Only admins can revoke keys');
-  }
-
-  const key = await getActiveKeyForUser(client, input.user_id);
-  if (!key) {
-    throw new Error('No active key found for this user');
-  }
-
-  await revokeKey(client, key.id);
-  return { revoked: true };
-}
