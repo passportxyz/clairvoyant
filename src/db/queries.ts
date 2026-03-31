@@ -42,9 +42,12 @@ export async function insertUser(
 
 export async function listUsers(
   client: pg.PoolClient,
-): Promise<User[]> {
-  const { rows } = await client.query<User>(
-    'SELECT * FROM users ORDER BY created_at ASC',
+): Promise<(User & { key_status: string | null })[]> {
+  const { rows } = await client.query<User & { key_status: string | null }>(
+    `SELECT u.*, k.status AS key_status
+     FROM users u
+     LEFT JOIN keys k ON k.user_id = u.id AND k.status IN ('pending', 'approved')
+     ORDER BY u.created_at ASC`,
   );
   return rows;
 }

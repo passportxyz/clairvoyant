@@ -274,10 +274,11 @@ function createServer(): McpServer {
 
   server.tool(
     'register_user',
-    'Register a new Clairvoyant user. Provide a public_key (ed25519) if the user needs API/CLI access. Users without keys are assignees only. If no admin exists, auto-approved. Otherwise pending admin approval.',
+    'Register a new Clairvoyant user, or re-register a new key for an existing user (after key revocation). Provide user_id to add a key to an existing user. If no admin exists, auto-approved. Otherwise pending admin approval.',
     {
       name: z.string().min(1).max(255),
       public_key: z.string().max(1024).optional().describe('ed25519 public key — provide if user needs to authenticate'),
+      user_id: z.string().uuid().optional().describe('Existing user ID — to register a new key after revocation'),
     },
     withClientOptionalAuth(async (client, _actorId, params) => {
       return registerUser(client, params);

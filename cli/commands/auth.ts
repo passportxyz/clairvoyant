@@ -132,17 +132,23 @@ export function registerAuthCommands(program: Command): void {
 
   program
     .command('register')
-    .description('Register as a new user and authenticate')
+    .description('Register as a new user, or re-register a new key for an existing user')
     .requiredOption('--name <name>', 'Display name')
+    .option('--user-id <id>', 'Existing user ID (re-register new key after revocation)')
     .action(async (opts) => {
       // CLI users always have keys (from cv init)
       const publicKey = await loadPublicKey();
       const privateKeyPem = await loadPrivateKey();
 
-      const result = await quickCall('register_user', {
+      const params: Record<string, string> = {
         name: opts.name,
         public_key: publicKey,
-      }, { noAuth: true }) as {
+      };
+      if (opts.userId) {
+        params.user_id = opts.userId;
+      }
+
+      const result = await quickCall('register_user', params, { noAuth: true }) as {
         user: { id: string; status: string };
         key?: { id: string; status: string };
         warning?: string;
@@ -164,7 +170,7 @@ export function registerAuthCommands(program: Command): void {
       }
 
       // Auto-login if auto-approved
-      if (result.user.status === 'active') {
+      if (result.user.status === 'active' && result.key?.status === 'approved') {
         const { saveToken } = await import('../config.js');
         const token = await doLogin(result.user.id, privateKeyPem);
         await saveToken(token);

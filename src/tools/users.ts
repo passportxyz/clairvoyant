@@ -27,6 +27,7 @@ import type { User } from '../types.js';
 export interface RegisterUserInput {
   name: string;
   public_key?: string;
+  user_id?: string;
 }
 
 export async function registerUser(
@@ -48,10 +49,27 @@ export async function registerUser(
   const adminExists = await hasAnyAdmin(client);
   const autoApprove = !adminExists;
 
-  const user = await insertUser(client, {
-    name: input.name,
-    status: autoApprove ? 'active' : 'pending',
-  });
+  let user: User;
+
+  if (input.user_id) {
+    // Re-registration: add a new key to an existing user
+    const existing = await getUserById(client, input.user_id);
+    if (!existing) {
+      throw new Error(`User not found: ${input.user_id}`);
+    }
+    // Ensure they don't already have an active key
+    const activeKey = await getActiveKeyForUser(client, input.user_id);
+    if (activeKey) {
+      throw new Error('User already has an active key. Revoke it first before registering a new one.');
+    }
+    user = existing;
+  } else {
+    // New user registration
+    user = await insertUser(client, {
+      name: input.name,
+      status: autoApprove ? 'active' : 'pending',
+    });
+  }
 
   let keyResult: { id: string; status: string } | undefined;
 
@@ -67,9 +85,15 @@ export async function registerUser(
   const result: { user: User; key?: { id: string; status: string }; warning?: string } = { user };
   if (keyResult) result.key = keyResult;
 
-  result.warning = autoApprove
-    ? 'No admin configured — registration is open. Run "cv admin set <user_id>" to lock down.'
-    : 'Registration pending admin approval.';
+  if (input.user_id) {
+    result.warning = autoApprove
+      ? 'New key registered and auto-approved.'
+      : 'New key registered — pending admin approval.';
+  } else {
+    result.warning = autoApprove
+      ? 'No admin configured — registration is open. Run "cv admin set <user_id>" to lock down.'
+      : 'Registration pending admin approval.';
+  }
 
   return result;
 }

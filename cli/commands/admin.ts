@@ -10,7 +10,8 @@ function formatUser(u: Record<string, unknown>): string {
   const name = u.name ?? '(unknown)';
   const status = u.status ?? 'active';
   const admin = u.is_admin ? ' [admin]' : '';
-  return `${id}  ${name}  (${status})${admin}`;
+  const keyStatus = u.key_status ? ` key:${u.key_status}` : ' key:none';
+  return `${id}  ${name}  (${status}${keyStatus})${admin}`;
 }
 
 // ---------------------------------------------------------------------------
