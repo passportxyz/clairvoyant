@@ -131,7 +131,7 @@ function processSideEffectsFromResult(result: unknown): void {
 
 function createServer(): McpServer {
   const server = new McpServer(
-    { name: 'quest-log', version: pkg.version },
+    { name: 'questlog', version: pkg.version },
     { capabilities: { tools: {} } },
   );
 
@@ -249,14 +249,14 @@ async function main() {
   const pool = getPool();
 
   // Run migrations on startup
-  console.error('[quest-log] Running migrations...');
+  console.error('[questlog] Running migrations...');
   await runMigrations(pool);
-  console.error('[quest-log] Migrations complete.');
+  console.error('[questlog] Migrations complete.');
 
   // Start staleness checker
   const { startStalenessChecker } = await import('./staleness.js');
   startStalenessChecker(pool);
-  console.error('[quest-log] Staleness checker started.');
+  console.error('[questlog] Staleness checker started.');
 
   // Express app with MCP defaults (JSON body parser, host validation)
   const app = createMcpExpressApp({ host: '0.0.0.0' });
@@ -339,7 +339,7 @@ async function main() {
         res.status(400).json({ error: 'Bad Request: missing session ID' });
       }
     } catch (err) {
-      console.error('[quest-log] Request error:', err);
+      console.error('[questlog] Request error:', err);
       if (!res.headersSent) {
         res.status(500).json({ error: 'Internal server error' });
       }
@@ -353,12 +353,12 @@ async function main() {
 
   const port = parseInt(process.env.PORT || '3000', 10);
   const httpServer = app.listen(port, '0.0.0.0', () => {
-    console.error(`[quest-log] MCP server listening on http://0.0.0.0:${port}/mcp`);
+    console.error(`[questlog] MCP server listening on http://0.0.0.0:${port}/mcp`);
   });
 
   // Graceful shutdown
   const cleanup = async () => {
-    console.error('[quest-log] Shutting down...');
+    console.error('[questlog] Shutting down...');
     httpServer.close();
     for (const { server, transport } of sessions.values()) {
       await transport.close();
@@ -373,6 +373,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('[quest-log] Fatal error:', err);
+  console.error('[questlog] Fatal error:', err);
   process.exit(1);
 });

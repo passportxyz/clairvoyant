@@ -261,7 +261,7 @@ export function registerAuthCommands(program: Command): void {
       // Use claude mcp add with the remote HTTP endpoint
       try {
         execFileSync('claude', [
-          'mcp', 'add', 'quest-log',
+          'mcp', 'add', 'questlog',
           '--transport', 'http', serverUrl,
           '--', '--header', `Authorization: Bearer ${token}`,
         ], { stdio: 'inherit' });
@@ -275,7 +275,7 @@ export function registerAuthCommands(program: Command): void {
         console.log();
         const mcpConfig = {
           mcpServers: {
-            'quest-log': {
+            'questlog': {
               url: serverUrl,
               headers: {
                 Authorization: `Bearer ${token}`,
@@ -291,7 +291,7 @@ export function registerAuthCommands(program: Command): void {
         const __dirname = dirname(fileURLToPath(import.meta.url));
         // Compiled: dist/cli/commands/auth.js → package root is 3 levels up
         const skillSrc = join(__dirname, '..', '..', '..', 'SKILL.md');
-        const skillDest = join(homedir(), '.claude', 'skills', 'quest-log.md');
+        const skillDest = join(homedir(), '.claude', 'skills', 'questlog.md');
         await mkdir(dirname(skillDest), { recursive: true });
         await copyFile(skillSrc, skillDest);
         console.log(`Skill installed: ${skillDest}`);
@@ -311,7 +311,7 @@ export function registerAuthCommands(program: Command): void {
 
       const config = {
         mcpServers: {
-          'quest-log': {
+          'questlog': {
             url: serverUrl,
             headers: {
               Authorization: `Bearer ${token ?? '<your-token-here>'}`,
