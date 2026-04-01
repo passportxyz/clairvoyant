@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { cp, mkdir, writeFile } from 'node:fs/promises';
+import { access, cp, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
@@ -247,7 +247,7 @@ export function registerAuthCommands(program: Command): void {
 
   program
     .command('install')
-    .description('Install Quest Log MCP server into Claude Code')
+    .description('Ensure Quest Log MCP server + skill are both installed')
     .action(async () => {
       const config = await loadConfig();
       const token = await loadToken();
@@ -258,45 +258,77 @@ export function registerAuthCommands(program: Command): void {
         process.exit(1);
       }
 
-      // Use claude mcp add with the remote HTTP endpoint
+      const __dirname = dirname(fileURLToPath(import.meta.url));
+      const skillSrc = join(__dirname, '..', '..', '..', 'skills', 'questlog');
+      const skillDest = join(homedir(), '.claude', 'skills', 'questlog');
+
+      // ── Check what's already installed ──────────────────────────
+      let mcpInstalled = false;
       try {
-        execFileSync('claude', [
-          'mcp', 'add', 'questlog',
-          '--transport', 'http', serverUrl,
-          '--', '--header', `Authorization: Bearer ${token}`,
-        ], { stdio: 'inherit' });
-        console.log();
-        console.log(`MCP server installed in Claude Code.`);
-        console.log(`  Server: ${serverUrl}`);
-        console.log(`  User:   ${config.user_id ?? '(unknown)'}`);
+        const out = execFileSync('claude', ['mcp', 'list'], { encoding: 'utf8' });
+        mcpInstalled = out.includes('questlog');
       } catch {
-        // claude CLI may not be available — fall back to printing config
-        console.log(`Could not run "claude mcp add". Add this to your MCP config manually:`);
-        console.log();
-        const mcpConfig = {
-          mcpServers: {
-            'questlog': {
-              url: serverUrl,
-              headers: {
-                Authorization: `Bearer ${token}`,
-              },
-            },
-          },
-        };
-        console.log(JSON.stringify(mcpConfig, null, 2));
+        // claude CLI not available
       }
 
-      // Install Quest Log skill directory into Claude Code
+      let skillInstalled = false;
       try {
-        const __dirname = dirname(fileURLToPath(import.meta.url));
-        // Compiled: dist/cli/commands/auth.js → package root is 3 levels up
-        const skillSrc = join(__dirname, '..', '..', '..', 'skills', 'questlog');
-        const skillDest = join(homedir(), '.claude', 'skills', 'questlog');
-        await cp(skillSrc, skillDest, { recursive: true });
-        console.log(`Skill installed: ${skillDest}/`);
-      } catch (err) {
-        console.log(`Could not install skill directory: ${err instanceof Error ? err.message : err}`);
+        await access(join(skillDest, 'SKILL.md'));
+        skillInstalled = true;
+      } catch {
+        // skill not found
       }
+
+      // ── Install MCP server if needed ────────────────────────────
+      if (mcpInstalled) {
+        console.log(`✓ MCP server already configured`);
+      } else {
+        try {
+          execFileSync('claude', [
+            'mcp', 'add', 'questlog',
+            '--transport', 'http', serverUrl,
+            '--', '--header', `Authorization: Bearer ${token}`,
+          ], { stdio: 'inherit' });
+          console.log();
+          console.log(`✓ MCP server installed`);
+        } catch {
+          console.log(`✗ Could not run "claude mcp add". Add manually:`);
+          console.log();
+          const mcpConfig = {
+            mcpServers: {
+              'questlog': {
+                url: serverUrl,
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                },
+              },
+            },
+          };
+          console.log(JSON.stringify(mcpConfig, null, 2));
+        }
+      }
+
+      // ── Install skill if needed ─────────────────────────────────
+      if (skillInstalled) {
+        // Always re-copy to pick up updates
+        try {
+          await cp(skillSrc, skillDest, { recursive: true });
+          console.log(`✓ Skill updated: ${skillDest}/`);
+        } catch (err) {
+          console.log(`✓ Skill already installed: ${skillDest}/`);
+        }
+      } else {
+        try {
+          await cp(skillSrc, skillDest, { recursive: true });
+          console.log(`✓ Skill installed: ${skillDest}/`);
+        } catch (err) {
+          console.log(`✗ Could not install skill: ${err instanceof Error ? err.message : err}`);
+        }
+      }
+
+      console.log();
+      console.log(`  Server: ${serverUrl}`);
+      console.log(`  User:   ${config.user_id ?? '(unknown)'}`);
     });
 
   // ── ql mcp-config ────────────────────────────────────────────
