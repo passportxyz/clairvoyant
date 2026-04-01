@@ -150,7 +150,18 @@ Humans talk to their agents. Agents talk to Quest Log. AI is the UI.
 
 - **MCP server** — 5 core task tools
 - **REST API** — auth and admin endpoints
-- **CLI (`ql`) + SKILL.md** — MCP client for agents that don't natively support MCP
+- **CLI (`ql`) + Skill** — MCP client for agents that don't natively support MCP
+
+## Install as a Claude Code plugin
+
+Add the Quest Log marketplace and install the skill:
+
+```
+/plugin marketplace add passportxyz/questlog
+/plugin install questlog@questlog
+```
+
+This gives Claude the `/questlog:questlog` skill with full task management knowledge.
 
 ## More
 
