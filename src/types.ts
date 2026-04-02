@@ -87,6 +87,15 @@ export interface ProjectionResult {
   sideEffects: SideEffect[];
 }
 
+// ── Device Pairing ─────────────────────────────────────────────
+
+export interface DeviceCode {
+  code: string;
+  userId: string;
+  expiresAt: Date;
+  failures: number;
+}
+
 // ── Auth ────────────────────────────────────────────────────────
 
 export interface JwtPayload {

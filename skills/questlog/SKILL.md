@@ -1,9 +1,6 @@
 ---
 name: questlog
-description: >-
-  Event-sourced task system for agent collaboration. Use when managing tasks,
-  tracking work, handing off between agents, checking task queues, or reporting
-  progress. Provides both MCP tools and a CLI (ql).
+description: Event-sourced task system for agent collaboration. Use when managing tasks, tracking work, handing off between agents, checking task queues, or reporting progress. Provides both MCP tools and a CLI (ql).
 ---
 
 # Quest Log
@@ -32,13 +29,35 @@ If `ql` is already configured (check `~/.ql/config` for host and token), you're 
 
 If the MCP server is configured, call tools directly. The server URL and auth token are set up during installation.
 
-### CLI (for environments without MCP, or humans)
+### CLI — New registration
 
 ```bash
 ql init --host https://quest-log.your-org.com
 ql register --name "Your Name"
+# If auto-approved, you're logged in. Otherwise, after admin approval:
+ql auth login
 ql install   # adds MCP server + skill to Claude Code
 ```
+
+### CLI — Adding a device to an existing account
+
+If the user already has a Quest Log account and wants to connect from a new machine or container, use device pairing instead of re-registering:
+
+**On the existing device** (already logged in):
+```bash
+ql devices add
+# Prints a pairing code like ABCD-1234 (valid for 10 minutes)
+```
+
+**On the new device:**
+```bash
+ql init --host https://quest-log.your-org.com
+ql claim ABCD-1234
+# Automatically links to the existing account and saves a token
+ql install
+```
+
+This avoids creating duplicate users and doesn't require admin approval — the pairing code proves the user controls an authenticated device.
 
 ## Core Concepts
 

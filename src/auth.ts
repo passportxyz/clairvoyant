@@ -1,11 +1,14 @@
 import jwt from 'jsonwebtoken';
 import crypto from 'node:crypto';
-import { AuthError, type JwtPayload } from './types.js';
+import { AuthError, type JwtPayload, type DeviceCode } from './types.js';
 
 // ── Internal State ─────────────────────────────────────────────
 
 // Nonces are bound to user_id to prevent cross-user replay
 const nonceStore: Map<string, { expiresAt: Date; userId: string }> = new Map();
+
+// Device pairing codes — short-lived, single-use
+const deviceCodeStore: Map<string, DeviceCode> = new Map();
 
 function getSecret(): string {
   const secret = process.env.QL_JWT_SECRET;
@@ -53,6 +56,13 @@ export function extractActorId(token: string): string {
   return payload.sub;
 }
 
+/** Extract the expiry date from a signed JWT without full verification. */
+export function getTokenExpiry(token: string): Date {
+  const parts = token.split('.');
+  const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8')) as JwtPayload;
+  return new Date(payload.exp * 1000);
+}
+
 // ── Nonce Management ───────────────────────────────────────────
 
 function cleanExpiredNonces(): void {
@@ -83,6 +93,97 @@ export function consumeNonce(nonce: string, userId: string): boolean {
   if (entry.userId !== userId) return false;
   nonceStore.delete(nonce);
   return true;
+}
+
+// ── Device Code Management ────────────────────────────────────
+
+// Charset excludes 0/O/1/I/L to avoid ambiguity
+const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const CODE_LENGTH = 8;
+const DEVICE_CODE_TTL_MS = 10 * 60_000; // 10 minutes
+const MAX_FAILURES = 5;
+const MAX_CODES_PER_USER = 3;
+
+function cleanExpiredDeviceCodes(): void {
+  const now = new Date();
+  for (const [code, entry] of deviceCodeStore) {
+    if (entry.expiresAt <= now) {
+      deviceCodeStore.delete(code);
+    }
+  }
+}
+
+function normalizeCode(code: string): string {
+  return code.replace(/[-\s]/g, '').toUpperCase();
+}
+
+/** Generate a uniform random index into a charset, avoiding modulo bias. */
+function uniformCharIndex(charsetLen: number): number {
+  const limit = 256 - (256 % charsetLen);
+  let b: number;
+  do { b = crypto.randomBytes(1)[0]; } while (b >= limit);
+  return b % charsetLen;
+}
+
+export function generateDeviceCode(userId: string): { code: string; expiresAt: Date } {
+  cleanExpiredDeviceCodes();
+
+  // Cap active codes per user
+  let userCodeCount = 0;
+  for (const entry of deviceCodeStore.values()) {
+    if (entry.userId === userId) userCodeCount++;
+  }
+  if (userCodeCount >= MAX_CODES_PER_USER) {
+    throw new Error(`Too many active device codes (max ${MAX_CODES_PER_USER}). Wait for existing codes to expire.`);
+  }
+
+  let raw = '';
+  for (let i = 0; i < CODE_LENGTH; i++) {
+    raw += CODE_CHARS[uniformCharIndex(CODE_CHARS.length)];
+  }
+
+  const expiresAt = new Date(Date.now() + DEVICE_CODE_TTL_MS);
+  deviceCodeStore.set(raw, { code: raw, userId, expiresAt, failures: 0 });
+
+  // Format as XXXX-XXXX for display
+  const formatted = `${raw.slice(0, 4)}-${raw.slice(4)}`;
+  return { code: formatted, expiresAt };
+}
+
+/**
+ * Look up a device code without consuming it. Returns null if invalid/expired/locked out.
+ * Call consumeDeviceCode after successful key registration to finalize.
+ */
+export function lookupDeviceCode(code: string): { userId: string } | null {
+  cleanExpiredDeviceCodes();
+
+  const normalized = normalizeCode(code);
+  const entry = deviceCodeStore.get(normalized);
+  if (!entry) return null;
+
+  if (entry.failures >= MAX_FAILURES) {
+    deviceCodeStore.delete(normalized);
+    return null;
+  }
+
+  return { userId: entry.userId };
+}
+
+/** Consume (delete) a device code after successful claim. */
+export function consumeDeviceCode(code: string): void {
+  deviceCodeStore.delete(normalizeCode(code));
+}
+
+/** Record a failed claim attempt. Invalidates after MAX_FAILURES. */
+export function recordDeviceCodeFailure(code: string): void {
+  const normalized = normalizeCode(code);
+  const entry = deviceCodeStore.get(normalized);
+  if (entry) {
+    entry.failures++;
+    if (entry.failures >= MAX_FAILURES) {
+      deviceCodeStore.delete(normalized);
+    }
+  }
 }
 
 // ── SSH Signature Verification ─────────────────────────────────

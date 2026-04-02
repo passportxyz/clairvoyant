@@ -44,9 +44,12 @@ export async function listUsers(
   client: pg.PoolClient,
 ): Promise<(User & { key_status: string | null })[]> {
   const { rows } = await client.query<User & { key_status: string | null }>(
-    `SELECT u.*, k.status AS key_status
+    `SELECT u.*,
+       (SELECT k.status FROM keys k
+        WHERE k.user_id = u.id AND k.status IN ('pending', 'approved')
+        ORDER BY CASE WHEN k.status = 'approved' THEN 0 ELSE 1 END
+        LIMIT 1) AS key_status
      FROM users u
-     LEFT JOIN keys k ON k.user_id = u.id AND k.status IN ('pending', 'approved')
      ORDER BY u.created_at ASC`,
   );
   return rows;
@@ -95,15 +98,15 @@ export async function getKeyByPublicKey(
   return rows[0] ?? null;
 }
 
-export async function getActiveKeyForUser(
+export async function getActiveKeysForUser(
   client: pg.PoolClient,
   userId: string,
-): Promise<Key | null> {
+): Promise<Key[]> {
   const { rows } = await client.query<Key>(
-    `SELECT * FROM keys WHERE user_id = $1 AND status IN ('pending', 'approved') LIMIT 1`,
+    `SELECT * FROM keys WHERE user_id = $1 AND status IN ('pending', 'approved') ORDER BY created_at ASC`,
     [userId],
   );
-  return rows[0] ?? null;
+  return rows;
 }
 
 export async function approveKey(

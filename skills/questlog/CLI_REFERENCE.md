@@ -39,6 +39,13 @@ ql auth login                        # re-authenticate (refresh token)
 ql auth status                       # check auth status
 ```
 
+## Device Commands
+
+```
+ql devices add                       # generate pairing code (10 min TTL)
+ql claim <code>                      # link new device using pairing code
+```
+
 ## Utility Commands
 
 ```

@@ -2,7 +2,7 @@ import pg from 'pg';
 import {
   getUserById,
   getKeyByPublicKey,
-  getActiveKeyForUser,
+  getActiveKeysForUser,
   insertUser,
   insertKey,
   hasAnyAdmin,
@@ -13,6 +13,7 @@ import {
   consumeNonce,
   verifySignature,
   signToken,
+  getTokenExpiry,
 } from '../auth.js';
 import type { User } from '../types.js';
 
@@ -50,11 +51,6 @@ export async function registerUser(
     const existing = await getUserById(client, input.user_id);
     if (!existing) {
       throw new Error(`User not found: ${input.user_id}`);
-    }
-    // Ensure they don't already have an active key
-    const activeKey = await getActiveKeyForUser(client, input.user_id);
-    if (activeKey) {
-      throw new Error('User already has an active key. Revoke it first before registering a new one.');
     }
     user = existing;
   } else {
@@ -145,26 +141,28 @@ export async function authenticate(
     throw new Error('Your registration is pending admin approval');
   }
 
-  // Get the user's approved key
-  const key = await getActiveKeyForUser(client, user.id);
-  if (!key) {
+  // Get all active keys for the user
+  const keys = await getActiveKeysForUser(client, user.id);
+  const approvedKeys = keys.filter(k => k.status === 'approved');
+
+  if (approvedKeys.length === 0) {
+    if (keys.length > 0) {
+      throw new Error('Your key is pending admin approval');
+    }
     throw new Error('No key registered for this user');
   }
 
-  if (key.status !== 'approved') {
-    throw new Error('Your key is pending admin approval');
-  }
-
-  const sigValid = verifySignature(key.public_key, input.nonce, input.signature);
+  // Try each approved key — succeed if any matches
+  const { nonce, signature } = input as { nonce: string; signature: string };
+  const sigValid = approvedKeys.some(key =>
+    verifySignature(key.public_key, nonce, signature),
+  );
   if (!sigValid) {
     throw new Error('Invalid signature');
   }
 
   const token = signToken({ sub: user.id, name: user.name });
-
-  const parts = token.split('.');
-  const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
-  const expires_at = new Date(payload.exp * 1000);
+  const expires_at = getTokenExpiry(token);
 
   return { token, expires_at, user };
 }

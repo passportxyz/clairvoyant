@@ -8,7 +8,7 @@ import {
   activateUser,
   setAdmin,
   listPendingUsers,
-  getActiveKeyForUser,
+  getActiveKeysForUser,
   approveKey,
   revokeKey,
   deleteUser,
@@ -85,9 +85,11 @@ export function createAdminRouter(pool: pg.Pool): Router {
 
       await activateUser(client, user_id);
 
-      const key = await getActiveKeyForUser(client, user_id);
-      if (key && key.status === 'pending') {
-        await approveKey(client, key.id, actorId ?? user_id);
+      const keys = await getActiveKeysForUser(client, user_id);
+      for (const key of keys) {
+        if (key.status === 'pending') {
+          await approveKey(client, key.id, actorId ?? user_id);
+        }
       }
 
       const user = await setAdmin(client, user_id, true);
@@ -162,14 +164,16 @@ export function createAdminRouter(pool: pg.Pool): Router {
     try {
       await client.query('BEGIN');
       const user = await activateUser(client, user_id);
-      const key = await getActiveKeyForUser(client, user_id);
-      let keyResult: { id: string; status: string } | undefined;
-      if (key && key.status === 'pending') {
-        const approved = await approveKey(client, key.id, actorId);
-        keyResult = { id: approved.id, status: approved.status };
+      const keys = await getActiveKeysForUser(client, user_id);
+      const approvedKeys: { id: string; status: string }[] = [];
+      for (const key of keys) {
+        if (key.status === 'pending') {
+          const approved = await approveKey(client, key.id, actorId);
+          approvedKeys.push({ id: approved.id, status: approved.status });
+        }
       }
       await client.query('COMMIT');
-      res.json({ user, key: keyResult });
+      res.json({ user, key: approvedKeys[0], keys_approved: approvedKeys.length });
     } catch (err) {
       await client.query('ROLLBACK').catch(() => {});
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
@@ -188,13 +192,15 @@ export function createAdminRouter(pool: pg.Pool): Router {
 
     const client = await pool.connect();
     try {
-      const key = await getActiveKeyForUser(client, user_id);
-      if (!key) {
-        res.status(404).json({ error: 'No active key found for this user' });
+      const keys = await getActiveKeysForUser(client, user_id);
+      if (keys.length === 0) {
+        res.status(404).json({ error: 'No active keys found for this user' });
         return;
       }
-      await revokeKey(client, key.id);
-      res.json({ revoked: true });
+      for (const key of keys) {
+        await revokeKey(client, key.id);
+      }
+      res.json({ revoked: true, count: keys.length });
     } finally {
       client.release();
     }

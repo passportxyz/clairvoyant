@@ -14,7 +14,7 @@ import {
 import {
   activateUser,
   setAdmin,
-  getActiveKeyForUser,
+  getActiveKeysForUser,
   approveKey,
   listPendingUsers,
 } from '../../src/db/queries.js';
@@ -284,9 +284,10 @@ describe('approve flow', () => {
       const user = await activateUser(client, reg.user.id);
       expect(user.status).toBe('active');
 
-      const key = await getActiveKeyForUser(client, reg.user.id);
-      expect(key).not.toBeNull();
-      if (key && key.status === 'pending') {
+      const keys = await getActiveKeysForUser(client, reg.user.id);
+      expect(keys.length).toBeGreaterThan(0);
+      const key = keys[0];
+      if (key.status === 'pending') {
         const approved = await approveKey(client, key.id, admin.id);
         expect(approved.status).toBe('approved');
       }

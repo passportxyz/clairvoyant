@@ -10,9 +10,11 @@ import {
   loadConfig,
   saveConfig,
   loadToken,
+  saveToken,
   loadPublicKey,
   loadPrivateKey,
   authCall,
+  authCallAuthenticated,
   getServerUrl,
   KEY_PATH,
   PUBKEY_PATH,
@@ -169,7 +171,6 @@ export function registerAuthCommands(program: Command): void {
 
       // Auto-login if auto-approved
       if (result.user.status === 'active' && result.key?.status === 'approved') {
-        const { saveToken } = await import('../config.js');
         const token = await doLogin(result.user.id, privateKeyPem);
         await saveToken(token);
 
@@ -179,6 +180,7 @@ export function registerAuthCommands(program: Command): void {
       } else {
         console.log();
         console.log(`Next: Ask an admin to approve you: ql admin approve ${result.user.id}`);
+        console.log(`      Then run: ql auth login && ql install`);
       }
     });
 
@@ -201,7 +203,6 @@ export function registerAuthCommands(program: Command): void {
       }
 
       const privateKeyPem = await loadPrivateKey();
-      const { saveToken } = await import('../config.js');
       const token = await doLogin(config.user_id, privateKeyPem);
       await saveToken(token);
 
@@ -352,5 +353,68 @@ export function registerAuthCommands(program: Command): void {
       };
 
       console.log(JSON.stringify(config, null, 2));
+    });
+
+  // ── ql devices ─────────────────────────────────────────────
+
+  const devices = program
+    .command('devices')
+    .description('Device management');
+
+  // ── ql devices add ─────────────────────────────────────────
+
+  devices
+    .command('add')
+    .description('Generate a pairing code to link a new device')
+    .action(async () => {
+      const config = await loadConfig();
+      const serverUrl = config.server_url ?? '(unknown)';
+      // Strip /mcp suffix for display
+      const host = serverUrl.replace(/\/mcp$/, '');
+
+      const result = await authCallAuthenticated('POST', '/device-code') as {
+        code: string;
+        expires_at: string;
+      };
+
+      console.log(`Pairing code: ${result.code}`);
+      console.log(`Expires: ${new Date(result.expires_at).toLocaleTimeString()}`);
+      console.log();
+      console.log(`On the new device, run:`);
+      console.log(`  ql init --host ${host}`);
+      console.log(`  ql claim ${result.code}`);
+    });
+
+  // ── ql claim ───────────────────────────────────────────────
+
+  program
+    .command('claim <code>')
+    .description('Link this device to an existing account using a pairing code')
+    .action(async (code: string) => {
+      // Require ql init to have been run (we need the keypair)
+      const publicKey = await loadPublicKey();
+
+      const result = await authCall('POST', '/claim', {
+        code,
+        public_key: publicKey,
+      }) as {
+        user: { id: string; name: string };
+        key: { id: string; status: string };
+        token: string;
+        expires_at: string;
+      };
+
+      // Save config
+      const config = await loadConfig();
+      config.user_id = result.user.id;
+      await saveConfig(config);
+      await saveToken(result.token);
+
+      console.log(`Linked to user: ${result.user.name}`);
+      console.log(`  User ID: ${result.user.id}`);
+      console.log(`  Key:     ${result.key.status}`);
+      console.log(`  Token:   saved to ~/.ql/token`);
+      console.log();
+      console.log(`Next: ql install`);
     });
 }

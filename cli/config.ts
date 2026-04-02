@@ -179,25 +179,30 @@ async function getBaseUrl(): Promise<string> {
 }
 
 /**
- * Call an admin REST endpoint.
+ * Generic REST call to the Quest Log server.
  */
-export async function adminCall(
+async function restCall(
   method: 'GET' | 'POST' | 'DELETE',
+  prefix: string,
   path: string,
   body?: Record<string, unknown>,
+  opts?: { auth?: boolean },
 ): Promise<unknown> {
   const baseUrl = await getBaseUrl();
-  const token = await loadToken();
-  if (!token) {
-    throw new Error('Authentication required. Run "ql auth login" first.');
-  }
 
   const headers: Record<string, string> = {
-    'Authorization': `Bearer ${token}`,
     'Content-Type': 'application/json',
   };
 
-  const res = await fetch(`${baseUrl}/admin${path}`, {
+  if (opts?.auth) {
+    const token = await loadToken();
+    if (!token) {
+      throw new Error('Authentication required. Run "ql auth login" first.');
+    }
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  const res = await fetch(`${baseUrl}${prefix}${path}`, {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
@@ -212,35 +217,35 @@ export async function adminCall(
   return data;
 }
 
-// ---------------------------------------------------------------------------
-// Auth REST API (unauthenticated endpoints)
-// ---------------------------------------------------------------------------
+/**
+ * Call an admin REST endpoint (authenticated).
+ */
+export async function adminCall(
+  method: 'GET' | 'POST' | 'DELETE',
+  path: string,
+  body?: Record<string, unknown>,
+): Promise<unknown> {
+  return restCall(method, '/admin', path, body, { auth: true });
+}
 
 /**
- * Call an auth REST endpoint. Does not require a token.
+ * Call an auth REST endpoint (unauthenticated).
  */
 export async function authCall(
   method: 'GET' | 'POST',
   path: string,
   body?: Record<string, unknown>,
 ): Promise<unknown> {
-  const baseUrl = await getBaseUrl();
+  return restCall(method, '/auth', path, body);
+}
 
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-
-  const res = await fetch(`${baseUrl}/auth${path}`, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-
-  const data = await res.json() as Record<string, unknown>;
-
-  if (!res.ok) {
-    throw new Error(data.error as string ?? `HTTP ${res.status}`);
-  }
-
-  return data;
+/**
+ * Call an auth REST endpoint with authentication (e.g. device-code).
+ */
+export async function authCallAuthenticated(
+  method: 'GET' | 'POST',
+  path: string,
+  body?: Record<string, unknown>,
+): Promise<unknown> {
+  return restCall(method, '/auth', path, body, { auth: true });
 }
