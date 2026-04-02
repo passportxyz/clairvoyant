@@ -11,7 +11,7 @@ npx skills add -g passportxyz/questlog
 Then tell your agent:
 
 ```
-"Register yourself with Quest Log"
+"Register yourself with Questlog at host <your questlog server endpoint> with name <user or bot name>"
 ```
 
 ## Use it

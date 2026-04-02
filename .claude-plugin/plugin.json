@@ -1,0 +1,9 @@
+{
+  "name": "questlog",
+  "description": "Quest Log — event-sourced task system for human-agent collaboration",
+  "version": "1.0.0",
+  "author": {
+    "name": "Passport"
+  },
+  "repository": "https://github.com/passportxyz/questlog"
+}
