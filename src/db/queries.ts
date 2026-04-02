@@ -501,11 +501,24 @@ export async function deleteUser(
   client: pg.PoolClient,
   userId: string,
 ): Promise<void> {
-  // Delete keys first (FK constraint)
-  await client.query('DELETE FROM keys WHERE user_id = $1', [userId]);
-  // Delete webhooks owned by user
-  await client.query('DELETE FROM webhooks WHERE owner_id = $1', [userId]);
-  // Delete the user
+  // Block deletion if user has tasks or events
+  const { rows: taskCheck } = await client.query<{ count: string }>(
+    `SELECT count(*) FROM tasks WHERE creator_id = $1 OR owner_id = $1`,
+    [userId],
+  );
+  if (parseInt(taskCheck[0].count, 10) > 0) {
+    throw new Error('Cannot delete user with existing tasks. Reassign or close their tasks first.');
+  }
+
+  const { rows: eventCheck } = await client.query<{ count: string }>(
+    `SELECT count(*) FROM events WHERE actor_id = $1`,
+    [userId],
+  );
+  if (parseInt(eventCheck[0].count, 10) > 0) {
+    throw new Error('Cannot delete user with event history. This user has contributed to tasks.');
+  }
+
+  // Delete user — keys and webhooks cascade (migration 009)
   const { rowCount } = await client.query(
     'DELETE FROM users WHERE id = $1',
     [userId],
