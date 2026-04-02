@@ -29,10 +29,8 @@ async function main() {
   try {
     await program.parseAsync(process.argv);
   } catch (err: unknown) {
-    if (err instanceof Error && 'code' in err && (err as { code: string }).code === 'commander.helpDisplayed') {
-      process.exit(0);
-    }
-    if (err instanceof Error && 'code' in err && (err as { code: string }).code === 'commander.version') {
+    const code = err instanceof Error && 'code' in err ? (err as { code: string }).code : '';
+    if (code === 'commander.helpDisplayed' || code === 'commander.help' || code === 'commander.version') {
       process.exit(0);
     }
     console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
