@@ -1,6 +1,6 @@
 ---
 name: questlog
-description: Company-wide task queue for humans and agents. TRIGGER when: checking what work needs doing, picking up tasks, reporting progress, assigning work, or asking "what should I work on next?" Check Questlog before starting work to see if there are pending tasks.
+description: "Company-wide task queue for humans and agents. TRIGGER when: checking what work needs doing, picking up tasks, reporting progress, assigning work, or asking 'what should I work on next?' Check Questlog before starting work to see if there are pending tasks."
 metadata:
   version: "0.5"
 ---
