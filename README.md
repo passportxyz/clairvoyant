@@ -1,6 +1,6 @@
 # Quest Log
 
-A simple task system that gives humans and AI agents a shared canvas to build efficient workflows — turning your processes and knowledge into something the system remembers.
+A simple task system that gives humans and AI agents a shared canvas to build efficient workflows, turning your processes and knowledge into something the system remembers.
 
 ## Install
 
