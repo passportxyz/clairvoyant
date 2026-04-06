@@ -32,6 +32,12 @@ ql update block <id> --blocked-by <id> "reason"  # mark blocked
 ql update set <id> priority 1        # change a field
 ```
 
+## Attachment Commands
+
+```
+ql attach <task_id> --file <path> --description "What this file contains"
+```
+
 ## Auth Commands
 
 ```

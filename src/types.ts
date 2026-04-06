@@ -73,6 +73,18 @@ export interface Webhook {
   created_at: Date;
 }
 
+export interface Attachment {
+  id: string;
+  task_id: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  description: string;
+  file_path: string;
+  created_by: string;
+  created_at: Date;
+}
+
 // ── Side Effects ────────────────────────────────────────────────
 
 export type SideEffect =

@@ -71,6 +71,12 @@ This avoids creating duplicate users and doesn't require admin approval — the 
 
 **The triage pool.** Open tasks with no owner sit in the triage pool. Query with `list_tasks` using `owner_id: null`.
 
+**Attachments.** Files can be attached to tasks for context — screenshots, logs, design mockups, configs. Use `attach_file` (MCP) or `ql attach` (CLI). Description is required so AI can reference attachments without viewing them.
+
+When to attach: If the user shares images, files, or other artifacts that are relevant to a task (or will be relevant to whoever works on it next), proactively attach them. Save the file locally first, then call `attach_file` with the local path.
+
+The server base URL is in your ql config (`~/.ql/config` → `server_url`). Strip the `/mcp` suffix to get the base. Attachments are served at `<base_url>/attachments/<attachment_id>`. When referencing an attachment in notes, handoffs, or progress updates, always include the full public URL so anyone reading the task can access it directly.
+
 ## Good Task Descriptions
 
 **Title:** what needs to be done, imperative voice.
