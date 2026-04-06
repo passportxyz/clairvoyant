@@ -1,5 +1,5 @@
 import pg from 'pg';
-import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
+import { copyFile, mkdir, stat } from 'node:fs/promises';
 import { extname, basename } from 'node:path';
 import crypto from 'node:crypto';
 import { insertAttachment, getTaskById } from '../db/queries.js';
@@ -38,7 +38,6 @@ export async function attachFile(
   const task = await getTaskById(client, input.task_id);
   if (!task) throw new Error(`Task not found: ${input.task_id}`);
 
-  // Read and validate file
   const fileStat = await stat(input.file_path);
   if (fileStat.size > MAX_FILE_SIZE) {
     throw new Error(`File exceeds 10MB limit (${fileStat.size} bytes)`);
@@ -47,16 +46,14 @@ export async function attachFile(
     throw new Error('Path is not a regular file');
   }
 
-  const fileBuffer = await readFile(input.file_path);
   const filename = basename(input.file_path);
   const contentType = guessContentType(filename);
   const ext = extname(filename);
 
-  // Write to storage directory
   await mkdir(ATTACHMENTS_DIR, { recursive: true });
   const storageId = crypto.randomUUID();
   const storagePath = `${ATTACHMENTS_DIR}/${storageId}${ext}`;
-  await writeFile(storagePath, fileBuffer);
+  await copyFile(input.file_path, storagePath);
 
   // Insert metadata
   const attachment = await insertAttachment(client, {

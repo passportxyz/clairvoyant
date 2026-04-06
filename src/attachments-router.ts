@@ -2,7 +2,6 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import pg from 'pg';
 import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
 import { requireAuth } from './middleware.js';
 import { getAttachmentById } from './db/queries.js';
 
@@ -21,18 +20,21 @@ export function createAttachmentsRouter(pool: pg.Pool): Router {
         return;
       }
 
-      // Verify file exists on disk
-      try {
-        await stat(attachment.file_path);
-      } catch {
-        res.status(404).json({ error: 'Attachment file missing from storage' });
-        return;
-      }
-
       res.setHeader('Content-Type', attachment.content_type);
       res.setHeader('Content-Disposition', `inline; filename="${attachment.filename}"`);
       res.setHeader('Content-Length', attachment.size_bytes);
-      createReadStream(attachment.file_path).pipe(res);
+
+      const stream = createReadStream(attachment.file_path);
+      stream.on('error', () => {
+        if (!res.headersSent) {
+          res.status(404).json({ error: 'Attachment file missing from storage' });
+        } else {
+          res.destroy();
+        }
+      });
+      stream.pipe(res);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     } finally {
       client.release();
     }

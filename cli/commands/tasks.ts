@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { resolve } from 'node:path';
 import { Command } from 'commander';
 import { createMcpClient, callTool, loadConfig } from '../config.js';
 
@@ -175,7 +176,6 @@ export function registerTaskCommands(program: Command): void {
     .requiredOption('--file <path>', 'Path to the file')
     .requiredOption('--description <desc>', 'Description of what this file contains')
     .action(async (taskId, opts) => {
-      const { resolve } = await import('node:path');
       const filePath = resolve(opts.file);
 
       const client = await createMcpClient();
