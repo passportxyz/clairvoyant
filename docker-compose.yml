@@ -15,5 +15,21 @@ services:
       timeout: 5s
       retries: 5
 
+  questlog:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://quest_log:quest_log@postgres:5432/quest_log
+      ATTACHMENTS_DIR: /data/attachments
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
+      JWT_SECRET: ${JWT_SECRET}
+    ports:
+      - "3000:3000"
+    volumes:
+      - attachments:/data/attachments
+
 volumes:
   pgdata:
+  attachments:
