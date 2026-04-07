@@ -1,6 +1,6 @@
 {
   "name": "questlog-ai",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "type": "module",
   "description": "Quest Log — event-sourced task management system with MCP interface",
   "main": "dist/src/index.js",
