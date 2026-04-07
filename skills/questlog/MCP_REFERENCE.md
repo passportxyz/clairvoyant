@@ -1,6 +1,6 @@
 # MCP Tools Reference
 
-Quest Log exposes 5 tools over MCP. These manage persistent, cross-session work items — use them for work that needs tracking, handoffs, or an audit trail.
+Quest Log exposes 6 tools over MCP. These manage persistent, cross-session work items — use them for work that needs tracking, handoffs, or an audit trail.
 
 ## create_task
 
@@ -68,6 +68,20 @@ Atomic claim with optimistic locking. Fails if already owned.
 | `idempotency_key` | yes | UUID for safe retries |
 
 Use when: picking up an unowned task from the triage pool. Returns `already_claimed` with the current `owner_id` if someone beat you to it.
+
+## attach_file
+
+Attach a file to a task. Reads a local file from disk, stores it on the server, and records metadata. Max 10MB.
+
+| Param | Required | Description |
+|---|---|---|
+| `task_id` | yes | The task to attach the file to |
+| `file_path` | yes | Absolute path to the file on the local filesystem |
+| `description` | yes | What this attachment contains and why it is relevant |
+
+Use when: attaching screenshots, design mockups, logs, configs, or any artifact that provides context for a task. The description is used by AI to reference the attachment without needing to view it directly.
+
+**Note:** The file path must be accessible to the Quest Log server process. For co-located deployments (CLI and server on the same machine), local paths work directly.
 
 ## Idempotency
 

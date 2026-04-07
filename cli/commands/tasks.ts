@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { resolve } from 'node:path';
 import { Command } from 'commander';
 import { createMcpClient, callTool, loadConfig } from '../config.js';
 
@@ -37,6 +38,15 @@ function formatTaskDetail(t: Record<string, unknown>): string {
   lines.push(`Version: ${t.version}`);
   lines.push(`Created: ${t.created_at}`);
   lines.push(`Updated: ${t.updated_at}`);
+
+  if (Array.isArray(t.attachments) && t.attachments.length > 0) {
+    lines.push('');
+    lines.push('Attachments:');
+    for (const a of t.attachments as Record<string, unknown>[]) {
+      lines.push(`  ${a.id}  ${a.filename} (${a.size_bytes} bytes)`);
+      lines.push(`    ${a.description}`);
+    }
+  }
 
   if (Array.isArray(t.events) && t.events.length > 0) {
     lines.push('');
@@ -151,8 +161,34 @@ export function registerTaskCommands(program: Command): void {
     .action(async (taskId) => {
       const client = await createMcpClient();
       try {
-        const result = await callTool(client, 'get_task', { task_id: taskId }) as { task: Record<string, unknown>; events: Record<string, unknown>[] };
-        console.log(formatTaskDetail({ ...result.task, events: result.events }));
+        const result = await callTool(client, 'get_task', { task_id: taskId }) as { task: Record<string, unknown>; events: Record<string, unknown>[]; attachments?: Record<string, unknown>[] };
+        console.log(formatTaskDetail({ ...result.task, events: result.events, attachments: result.attachments }));
+      } finally {
+        await client.close();
+      }
+    });
+
+  // ── ql attach ─────────────────────────────────────────────────
+
+  program
+    .command('attach <task_id>')
+    .description('Attach a file to a task')
+    .requiredOption('--file <path>', 'Path to the file')
+    .requiredOption('--description <desc>', 'Description of what this file contains')
+    .action(async (taskId, opts) => {
+      const filePath = resolve(opts.file);
+
+      const client = await createMcpClient();
+      try {
+        const result = await callTool(client, 'attach_file', {
+          task_id: taskId,
+          file_path: filePath,
+          description: opts.description,
+        }) as { attachment: Record<string, unknown> };
+        const att = result.attachment;
+        console.log(`Attached: ${att.id}`);
+        console.log(`  File: ${att.filename} (${att.size_bytes} bytes)`);
+        console.log(`  Description: ${att.description}`);
       } finally {
         await client.close();
       }

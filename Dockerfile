@@ -21,6 +21,7 @@ COPY --from=builder /app/dist/ dist/
 COPY migrations/ migrations/
 
 RUN addgroup -S app && adduser -S app -G app
+RUN mkdir -p /data/attachments && chown app:app /data/attachments
 USER app
 
 ENV PORT=3000

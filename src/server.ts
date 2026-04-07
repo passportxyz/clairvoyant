@@ -28,6 +28,8 @@ import { claimTask } from './tools/events.js';
 import { listTasks, listUsers } from './db/queries.js';
 import { createAdminRouter } from './admin.js';
 import { createAuthRouter } from './auth-router.js';
+import { createAttachmentsRouter } from './attachments-router.js';
+import { attachFile } from './tools/attachments.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -236,6 +238,21 @@ function createServer(): McpServer {
     }),
   );
 
+  // ── attach_file ────────────────────────────────────────────────
+
+  server.tool(
+    'attach_file',
+    'Attach a file to a task. Reads a local file, stores it, and records metadata. Max 10MB. Use for screenshots, logs, design mockups, or any artifact relevant to a task.',
+    {
+      task_id: z.string().describe('The task to attach the file to'),
+      file_path: z.string().describe('Absolute path to the file on the local filesystem'),
+      description: z.string().describe('What this attachment contains and why it is relevant'),
+    },
+    withClient(async (client, actorId, params) => {
+      return attachFile(client, actorId, params);
+    }, { write: true }),
+  );
+
   return server;
 }
 
@@ -266,6 +283,9 @@ async function main() {
 
   // Mount auth REST API (registration, challenge/response auth, user lookup)
   app.use('/auth', createAuthRouter(pool));
+
+  // Mount attachments file serving
+  app.use('/attachments', createAttachmentsRouter(pool));
 
   // JWT auth middleware — extracts Bearer token and attaches as AuthInfo
   app.use('/mcp', (req: Request, _res: Response, next: NextFunction) => {

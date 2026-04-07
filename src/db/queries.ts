@@ -7,6 +7,7 @@ import type {
   Event,
   EventType,
   Webhook,
+  Attachment,
 } from '../types.js';
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -493,6 +494,51 @@ export async function deleteWebhook(
     [webhookId],
   );
   if (rowCount === 0) throw new Error(`Webhook not found: ${webhookId}`);
+}
+
+// ── Attachment queries ────────────────────────────────────────────
+
+export async function insertAttachment(
+  client: pg.PoolClient,
+  params: {
+    task_id: string;
+    filename: string;
+    content_type: string;
+    size_bytes: number;
+    description: string;
+    file_path: string;
+    created_by: string;
+  },
+): Promise<Attachment> {
+  const { rows } = await client.query<Attachment>(
+    `INSERT INTO attachments (task_id, filename, content_type, size_bytes, description, file_path, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     RETURNING *`,
+    [params.task_id, params.filename, params.content_type, params.size_bytes, params.description, params.file_path, params.created_by],
+  );
+  return rows[0];
+}
+
+export async function getAttachmentById(
+  client: pg.PoolClient,
+  id: string,
+): Promise<Attachment | null> {
+  const { rows } = await client.query<Attachment>(
+    'SELECT * FROM attachments WHERE id = $1',
+    [id],
+  );
+  return rows[0] ?? null;
+}
+
+export async function getAttachmentsByTaskId(
+  client: pg.PoolClient,
+  taskId: string,
+): Promise<Attachment[]> {
+  const { rows } = await client.query<Attachment>(
+    'SELECT * FROM attachments WHERE task_id = $1 ORDER BY created_at ASC',
+    [taskId],
+  );
+  return rows;
 }
 
 // ── User deletion ─────────────────────────────────────────────────

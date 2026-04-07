@@ -7,9 +7,10 @@ import {
   getEventsByTaskId,
   getEventByIdempotencyKey,
   getUserById,
+  getAttachmentsByTaskId,
 } from '../db/queries.js';
 import { applyEvent } from '../projection.js';
-import type { Task, Event, SideEffect } from '../types.js';
+import type { Task, Event, Attachment, SideEffect } from '../types.js';
 
 // ── createTask ────────────────────────────────────────────────────
 
@@ -94,10 +95,11 @@ export async function getTask(
   client: pg.PoolClient,
   _actorId: string,
   input: { task_id: string },
-): Promise<{ task: Task; events: Event[] }> {
+): Promise<{ task: Task; events: Event[]; attachments: Attachment[] }> {
   const task = await getTaskById(client, input.task_id);
   if (!task) throw new Error(`Task not found: ${input.task_id}`);
 
   const events = await getEventsByTaskId(client, input.task_id);
-  return { task, events };
+  const attachments = await getAttachmentsByTaskId(client, input.task_id);
+  return { task, events, attachments };
 }
