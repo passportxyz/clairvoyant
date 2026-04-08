@@ -200,9 +200,8 @@ export function createBoardRouter(pool: pg.Pool): Router {
         const sub = await updateNotificationSubscription(client, existing[0].id, payload.sub, { events, active: true });
         res.json({ subscription: sub });
       } else {
-        const prefix = payload.sub.slice(0, 8);
-        const random = crypto.randomBytes(9).toString('base64url');
-        const topic = `ql-${prefix}-${random}`;
+        const random = crypto.randomBytes(16).toString('hex');
+        const topic = `ql-${random}`;
         const sub = await insertNotificationSubscription(client, { user_id: payload.sub, topic, events });
         res.json({ subscription: sub });
       }
@@ -549,6 +548,7 @@ function renderBoard(data: BoardData): string {
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"><\/script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"><\/script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -1147,6 +1147,29 @@ function renderBoard(data: BoardData): string {
   .notif-setup-hint a { color: var(--accent); text-decoration: none; }
   .notif-setup-hint a:hover { text-decoration: underline; }
 
+  .notif-qr-section {
+    display: flex;
+    gap: 1.5rem;
+    align-items: flex-start;
+  }
+
+  #notif-qr {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    flex-shrink: 0;
+  }
+
+  .notif-qr-instructions { flex: 1; }
+  .notif-qr-instructions ol { margin-bottom: 1rem; }
+
+  .notif-manual-url {
+    margin-top: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .notif-manual-url .notif-label { display: block; margin-bottom: 0.3rem; font-size: 0.7rem; }
+
   .notif-form-hint { font-size: 0.82rem; color: var(--text-dim); margin-bottom: 1rem; }
 
   .notif-event-grid {
@@ -1292,11 +1315,20 @@ function renderBoard(data: BoardData): string {
           </div>
           <div class="notif-setup-hint">
             <h3>Setup</h3>
-            <ol>
-              <li>Install the <a href="https://ntfy.sh" target="_blank">ntfy app</a> on your phone</li>
-              <li>Add a subscription to: <code id="notif-subscribe-url"></code></li>
-              <li>Done! You'll get push notifications for your selected events.</li>
-            </ol>
+            <div class="notif-qr-section">
+              <canvas id="notif-qr" width="200" height="200"></canvas>
+              <div class="notif-qr-instructions">
+                <ol>
+                  <li>Install the <a href="https://ntfy.sh" target="_blank">ntfy app</a> on your phone</li>
+                  <li>Scan this QR code with your phone camera</li>
+                  <li>It will open the ntfy app and auto-subscribe</li>
+                </ol>
+                <div class="notif-manual-url">
+                  <span class="notif-label">Or subscribe manually to:</span>
+                  <code id="notif-subscribe-url"></code>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1551,13 +1583,42 @@ function renderBoard(data: BoardData): string {
     }
   }
 
+  function renderQR(text) {
+    try {
+      const qr = qrcode(0, 'M');
+      qr.addData(text);
+      qr.make();
+      const canvas = document.getElementById('notif-qr');
+      const ctx = canvas.getContext('2d');
+      const count = qr.getModuleCount();
+      const size = 200;
+      const cellSize = size / (count + 8); // padding
+      const offset = (size - count * cellSize) / 2;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, size, size);
+      ctx.fillStyle = '#1a1a2e';
+      for (let r = 0; r < count; r++) {
+        for (let c = 0; c < count; c++) {
+          if (qr.isDark(r, c)) {
+            ctx.fillRect(offset + c * cellSize, offset + r * cellSize, cellSize + 0.5, cellSize + 0.5);
+          }
+        }
+      }
+    } catch (e) { console.error('QR render error:', e); }
+  }
+
   function showActiveSubscription(sub) {
     document.getElementById('notif-active').style.display = 'block';
     document.getElementById('notif-setup').style.display = 'none';
 
     document.getElementById('notif-topic').textContent = sub.topic;
     const ntfyBase = location.origin.replace(/:\\d+/, ':8080');
-    document.getElementById('notif-subscribe-url').textContent = ntfyBase + '/' + sub.topic;
+    const subscribeUrl = ntfyBase + '/' + sub.topic;
+    document.getElementById('notif-subscribe-url').textContent = subscribeUrl;
+
+    // Render QR code with ntfy:// deep link
+    const deepLink = 'ntfy://' + location.hostname + ':8080/' + sub.topic;
+    renderQR(deepLink);
 
     const eventsEl = document.getElementById('notif-events-list');
     eventsEl.innerHTML = sub.events.map(e =>

@@ -5,7 +5,6 @@ import { getNotificationSubscriptionsByUserId } from './db/queries.js';
 // ── Configuration ──────────────────────────────────────────────────
 
 const NTFY_URL = process.env.NTFY_URL || '';
-const NTFY_TOKEN = process.env.NTFY_TOKEN || '';
 const DEBOUNCE_MS = parseInt(process.env.NTFY_DEBOUNCE_MS || '120000', 10); // 2 min default
 
 // ── Virtual event types (user-facing) ──────────────────────────────
@@ -206,14 +205,9 @@ async function sendToNtfy(topic: string, items: BufferedNotification[]): Promise
   });
 
   try {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (NTFY_TOKEN) {
-      headers['Authorization'] = `Bearer ${NTFY_TOKEN}`;
-    }
-
     await fetch(NTFY_URL, {
       method: 'POST',
-      headers,
+      headers: { 'Content-Type': 'application/json' },
       body,
       signal: AbortSignal.timeout(5_000),
     });

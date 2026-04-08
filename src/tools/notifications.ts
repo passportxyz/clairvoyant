@@ -10,12 +10,13 @@ import { NOTIFICATION_EVENTS } from '../ntfy.js';
 import type { NotificationSubscription } from '../types.js';
 
 /**
- * Generate a unique, unguessable topic name for a user.
+ * Generate a unique, unguessable topic name.
+ * 128 bits of entropy (32 hex chars) — the topic name IS the credential.
+ * No separate ntfy auth needed; unguessable = secure.
  */
-function generateTopic(userId: string): string {
-  const prefix = userId.slice(0, 8);
-  const random = crypto.randomBytes(9).toString('base64url'); // 12 chars
-  return `ql-${prefix}-${random}`;
+function generateTopic(): string {
+  const random = crypto.randomBytes(16).toString('hex'); // 32 hex chars, 128 bits
+  return `ql-${random}`;
 }
 
 export async function subscribeNotifications(
@@ -48,7 +49,7 @@ export async function subscribeNotifications(
     };
   }
 
-  const topic = generateTopic(targetUserId);
+  const topic = generateTopic();
   const subscription = await insertNotificationSubscription(client, {
     user_id: targetUserId,
     topic,
