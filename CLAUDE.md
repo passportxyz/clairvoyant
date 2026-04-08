@@ -19,6 +19,7 @@ npm install -g questlog-ai
 - **Board UI**: Server-rendered from `src/board-router.ts` (not static files), light theme, GSAP animations, task detail modal. Auth via 30-day browser tokens.
 - **Production runs in Borg**: The questlog service is deployed via Borg's Docker infrastructure. Coordinate with the Borg thread (thread 935) for infra changes like adding new services to docker-compose.
 - **No agency in Quest Log**: Quest Log is a dumb task pipe — no AI, no workflows, no bot logic. Agents interact via MCP tools. Keep it simple.
+- **Agent-first design**: CLI and MCP tools are primarily used by agents (e.g. Claude Code) on behalf of users, not by humans directly. Tools that target a user (create_task, subscribe_notifications, etc.) accept an optional `user_id`/`owner_id` param so agents can act on behalf of the user they're helping. The `actorId` from the JWT is the agent's identity; `user_id` is who the action is for.
 
 
 ## Mim Knowledge

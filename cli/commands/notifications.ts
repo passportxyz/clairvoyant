@@ -22,6 +22,7 @@ export function registerNotificationCommands(program: Command): void {
     .command('subscribe')
     .description('Subscribe to push notifications')
     .option('--events <events>', `Comma-separated events: ${VALID_EVENTS.join(', ')}`, VALID_EVENTS.join(','))
+    .option('--user-id <id>', 'User ID to subscribe (agents acting on behalf of a user)')
     .action(async (opts) => {
       const events = opts.events.split(',').map((e: string) => e.trim());
       for (const evt of events) {
@@ -32,9 +33,12 @@ export function registerNotificationCommands(program: Command): void {
         }
       }
 
+      const params: Record<string, unknown> = { events };
+      if (opts.userId) params.user_id = opts.userId;
+
       const client = await createMcpClient();
       try {
-        const result = await callTool(client, 'subscribe_notifications', { events }) as {
+        const result = await callTool(client, 'subscribe_notifications', params) as {
           ntfy_topic: string;
           setup_instructions: string;
         };
@@ -51,11 +55,15 @@ export function registerNotificationCommands(program: Command): void {
 
   notifications
     .command('list')
-    .description('List your notification subscriptions')
-    .action(async () => {
+    .description('List notification subscriptions')
+    .option('--user-id <id>', 'User ID to list subscriptions for')
+    .action(async (opts) => {
+      const params: Record<string, unknown> = {};
+      if (opts.userId) params.user_id = opts.userId;
+
       const client = await createMcpClient();
       try {
-        const result = await callTool(client, 'list_notification_subscriptions') as {
+        const result = await callTool(client, 'list_notification_subscriptions', params) as {
           subscriptions: Array<{
             id: string;
             topic: string;

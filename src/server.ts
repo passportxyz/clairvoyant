@@ -299,9 +299,10 @@ function createServer(): McpServer {
 
   server.tool(
     'subscribe_notifications',
-    `Subscribe to push notifications for task events via ntfy. Valid events: ${NOTIFICATION_EVENTS.join(', ')}. If you already have a subscription, this updates it.`,
+    `Subscribe to push notifications for task events via ntfy. Valid events: ${NOTIFICATION_EVENTS.join(', ')}. If the user already has a subscription, this updates it. Agents can create subscriptions on behalf of users by passing user_id.`,
     {
       events: z.array(z.string()).describe('Notification events to subscribe to'),
+      user_id: z.string().optional().describe('User ID to subscribe (for agents acting on behalf of a user). Defaults to caller.'),
     },
     withClient(async (client, actorId, params) => {
       return subscribeNotifications(client, actorId, params);
@@ -312,10 +313,12 @@ function createServer(): McpServer {
 
   server.tool(
     'list_notification_subscriptions',
-    'List your active notification subscriptions',
-    {},
-    withClient(async (client, actorId, _params) => {
-      return listNotificationSubscriptions(client, actorId);
+    'List notification subscriptions. Agents can pass user_id to list another user\'s subscriptions.',
+    {
+      user_id: z.string().optional().describe('User ID to list subscriptions for. Defaults to caller.'),
+    },
+    withClient(async (client, actorId, params) => {
+      return listNotificationSubscriptions(client, actorId, params);
     }),
   );
 
@@ -323,9 +326,10 @@ function createServer(): McpServer {
 
   server.tool(
     'unsubscribe_notifications',
-    'Remove a notification subscription',
+    'Remove a notification subscription. Agents can pass user_id to remove on behalf of a user.',
     {
       subscription_id: z.string().describe('The subscription ID to remove'),
+      user_id: z.string().optional().describe('User ID who owns the subscription. Defaults to caller.'),
     },
     withClient(async (client, actorId, params) => {
       return unsubscribeNotifications(client, actorId, params);

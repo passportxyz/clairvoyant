@@ -21,8 +21,11 @@ function generateTopic(userId: string): string {
 export async function subscribeNotifications(
   client: pg.PoolClient,
   actorId: string,
-  input: { events: string[] },
+  input: { events: string[]; user_id?: string },
 ): Promise<{ subscription: NotificationSubscription; ntfy_topic: string; setup_instructions: string }> {
+  // Agents can create subscriptions on behalf of other users
+  const targetUserId = input.user_id || actorId;
+
   // Validate events
   for (const evt of input.events) {
     if (!NOTIFICATION_EVENTS.includes(evt as any)) {
@@ -30,10 +33,10 @@ export async function subscribeNotifications(
     }
   }
 
-  // Check if user already has a subscription — update it instead of creating duplicate
-  const existing = await getNotificationSubscriptionsByUserId(client, actorId);
+  // Check if target user already has a subscription — update it instead of creating duplicate
+  const existing = await getNotificationSubscriptionsByUserId(client, targetUserId);
   if (existing.length > 0) {
-    const sub = await updateNotificationSubscription(client, existing[0].id, actorId, {
+    const sub = await updateNotificationSubscription(client, existing[0].id, targetUserId, {
       events: input.events,
       active: true,
     });
@@ -45,9 +48,9 @@ export async function subscribeNotifications(
     };
   }
 
-  const topic = generateTopic(actorId);
+  const topic = generateTopic(targetUserId);
   const subscription = await insertNotificationSubscription(client, {
-    user_id: actorId,
+    user_id: targetUserId,
     topic,
     events: input.events,
   });
@@ -63,16 +66,19 @@ export async function subscribeNotifications(
 export async function listNotificationSubscriptions(
   client: pg.PoolClient,
   actorId: string,
+  input: { user_id?: string },
 ): Promise<{ subscriptions: NotificationSubscription[] }> {
-  const subscriptions = await getNotificationSubscriptionsByUserId(client, actorId);
+  const targetUserId = input.user_id || actorId;
+  const subscriptions = await getNotificationSubscriptionsByUserId(client, targetUserId);
   return { subscriptions };
 }
 
 export async function unsubscribeNotifications(
   client: pg.PoolClient,
   actorId: string,
-  input: { subscription_id: string },
+  input: { subscription_id: string; user_id?: string },
 ): Promise<{ deleted: true }> {
-  await deleteNotificationSubscription(client, input.subscription_id, actorId);
+  const targetUserId = input.user_id || actorId;
+  await deleteNotificationSubscription(client, input.subscription_id, targetUserId);
   return { deleted: true };
 }
